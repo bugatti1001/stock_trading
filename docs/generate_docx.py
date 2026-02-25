@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""Generate user guide as Word document with screenshots."""
+from docx import Document
+from docx.shared import Inches, Pt, Cm, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml.ns import qn
+import os
+
+IMG = os.path.join(os.path.dirname(__file__), "images")
+OUT = os.path.join(os.path.dirname(__file__), "用户使用手册.docx")
+
+doc = Document()
+
+# ── Page setup ──
+for section in doc.sections:
+    section.top_margin = Cm(2)
+    section.bottom_margin = Cm(2)
+    section.left_margin = Cm(2.5)
+    section.right_margin = Cm(2.5)
+
+# ── Styles ──
+style = doc.styles['Normal']
+style.font.name = 'Microsoft YaHei'
+style.font.size = Pt(11)
+style.paragraph_format.space_after = Pt(6)
+style.paragraph_format.line_spacing = 1.35
+style.element.rPr.rFonts.set(qn('w:eastAsia'), 'Microsoft YaHei')
+
+BLUE = RGBColor(0x1a, 0x56, 0xdb)
+GRAY = RGBColor(0x66, 0x66, 0x66)
+DARK = RGBColor(0x44, 0x44, 0x44)
+AMBER = RGBColor(0x8B, 0x57, 0x00)
+RED = RGBColor(0xCC, 0x33, 0x00)
+
+for level in range(1, 4):
+    hs = doc.styles[f'Heading {level}']
+    hs.font.name = 'Microsoft YaHei'
+    hs.font.color.rgb = BLUE
+    hs.element.rPr.rFonts.set(qn('w:eastAsia'), 'Microsoft YaHei')
+    hs.font.size = {1: Pt(22), 2: Pt(16), 3: Pt(13)}[level]
+
+
+def add_img(filename, width=Inches(6.2)):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after = Pt(4)
+    run = p.add_run()
+    run.add_picture(os.path.join(IMG, filename), width=width)
+
+
+def add_caption(text):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(12)
+    run = p.add_run(text)
+    run.font.size = Pt(9)
+    run.font.color.rgb = GRAY
+    run.font.italic = True
+
+
+def add_note(icon, text, color):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(6)
+    run = p.add_run(f"{icon} {text}")
+    run.font.size = Pt(10.5)
+    run.font.color.rgb = color
+
+
+def add_table(headers, rows):
+    table = doc.add_table(rows=1 + len(rows), cols=len(headers))
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = 'Light Grid Accent 1'
+    for i, h in enumerate(headers):
+        cell = table.rows[0].cells[i]
+        cell.text = h
+        for p in cell.paragraphs:
+            p.runs[0].font.bold = True
+            p.runs[0].font.size = Pt(10)
+    for r_idx, row in enumerate(rows):
+        for c_idx, val in enumerate(row):
+            cell = table.rows[r_idx + 1].cells[c_idx]
+            cell.text = val
+            for p in cell.paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(10)
+    doc.add_paragraph()
+
+
+def bullet(text):
+    doc.add_paragraph(text, style='List Bullet')
+
+
+def number(text):
+    doc.add_paragraph(text, style='List Number')
+
+
+# ══════════════════════════════════════════════════════════
+# TITLE PAGE
+# ══════════════════════════════════════════════════════════
+for _ in range(6):
+    doc.add_paragraph()
+
+title = doc.add_paragraph()
+title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+run = title.add_run("\u80a1\u7968\u5206\u6790\u7cfb\u7edf")  # 股票分析系统
+run.font.size = Pt(36)
+run.font.bold = True
+run.font.color.rgb = BLUE
+
+subtitle = doc.add_paragraph()
+subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+run = subtitle.add_run("\u7528\u6237\u4f7f\u7528\u624b\u518c")  # 用户使用手册
+run.font.size = Pt(20)
+run.font.color.rgb = DARK
+
+doc.add_paragraph()
+
+ver = doc.add_paragraph()
+ver.alignment = WD_ALIGN_PARAGRAPH.CENTER
+run = ver.add_run("v2.0  |  2026 \u5e74 2 \u6708")
+run.font.size = Pt(12)
+run.font.color.rgb = GRAY
+
+doc.add_page_break()
+
+# ══════════════════════════════════════════════════════════
+# CORE CONCEPT
+# ══════════════════════════════════════════════════════════
+doc.add_heading("\u6838\u5fc3\u7406\u5ff5", level=1)  # 核心理念
+doc.add_paragraph(
+    "\u672c\u7cfb\u7edf\u7684\u5206\u6790\u8d28\u91cf\u5b8c\u5168\u53d6\u51b3\u4e8e"
+    "\u6570\u636e\u7684\u5b8c\u6574\u6027\u548c\u51c6\u786e\u6027\u3002"
+    "\u5728\u4f7f\u7528 AI \u5206\u6790\u529f\u80fd\u4e4b\u524d\uff0c"
+    "\u8bf7\u52a1\u5fc5\u786e\u4fdd\u80a1\u7968\u7684\u57fa\u672c\u9762\u6570\u636e\u5df2\u5c31\u7eea\u3002"
+    "\u4ee5\u4e0b\u6b65\u9aa4\u6309\u63a8\u8350\u987a\u5e8f\u6392\u5217\uff0c"
+    "\u6bcf\u4e00\u6b65\u90fd\u4e3a\u540e\u7eed\u529f\u80fd\u63d0\u4f9b\u6570\u636e\u57fa\u7840\u3002"
+)
+
+# ══════════════════════════════════════════════════════════
+# STEP 1
+# ══════════════════════════════════════════════════════════
+doc.add_heading("\u7b2c\u4e00\u6b65\uff1a\u9009\u80a1\uff08\u80a1\u7968\u6c60\uff09", level=1)
+doc.add_paragraph(
+    "\u8fdb\u5165\u300c\u80a1\u7968\u6c60\u300d\u9875\u9762\uff0c"
+    "\u70b9\u51fb\u53f3\u4e0a\u89d2\u300c\u6dfb\u52a0\u80a1\u7968\u300d\uff0c"
+    "\u8f93\u5165\u4ee3\u7801\u548c\u540d\u79f0\u3002"
+    "\u7cfb\u7edf\u652f\u6301\u7f8e\u80a1\u3001A \u80a1\u548c\u6e2f\u80a1\u4e09\u4e2a\u5e02\u573a\uff1a"
+)
+
+add_table(
+    ["\u5e02\u573a", "\u4ee3\u7801\u683c\u5f0f", "\u793a\u4f8b"],
+    [
+        ["\u7f8e\u80a1", "\u82f1\u6587\u4ee3\u7801", "AAPL, GOOGL, META"],
+        ["A \u80a1", "SH/SZ + 6\u4f4d\u6570\u5b57", "SH600519, SZ000333"],
+        ["\u6e2f\u80a1", "HK + 5\u4f4d\u6570\u5b57", "HK01810, HK00700"],
+    ]
+)
+
+doc.add_paragraph("\u6dfb\u52a0\u540e\u7cfb\u7edf\u4f1a\u81ea\u52a8\u5c1d\u8bd5\u62c9\u53d6\u57fa\u7840\u4fe1\u606f\u548c\u5b9e\u65f6\u6570\u636e\u3002")
+
+add_img("01_stocks.png")
+add_caption("\u56fe 1\uff1a\u80a1\u7968\u6c60\u7ba1\u7406\u9875\u9762 \u2014 \u5217\u8868\u5c55\u793a\u4ef7\u683c\u3001\u5e02\u503c\u3001PE\u3001\u51c0\u5229\u7387\u7b49\u5173\u952e\u6307\u6807")
+
+add_note("\U0001f4a1",
+         "\u300c\u95e8\u69db\u300d\u5217\uff08\u5e02\u503c\u3001PE\u30013Y\u3001\u76c8\u5229\uff09"
+         "\u53ef\u4ee5\u5feb\u901f\u5224\u65ad\u6570\u636e\u5b8c\u6574\u5ea6\uff1b"
+         "\u300c\u6765\u6e90\u300d\u5217\u663e\u793a\u6570\u636e\u6765\u81ea Finnhub\u3001\u96ea\u7403\u8fd8\u662f SEC\u3002",
+         AMBER)
+
+# ══════════════════════════════════════════════════════════
+# STEP 2
+# ══════════════════════════════════════════════════════════
+doc.add_heading("\u7b2c\u4e8c\u6b65\uff1a\u786e\u8ba4\u6570\u636e\u5b8c\u6574\uff08\u5173\u952e\u6b65\u9aa4\uff09", level=1)
+doc.add_paragraph(
+    "\u6dfb\u52a0\u80a1\u7968\u540e\uff0c\u5fc5\u987b\u70b9\u8fdb\u80a1\u7968\u8be6\u60c5\u9875"
+    "\u68c0\u67e5\u8d22\u52a1\u6570\u636e\u662f\u5426\u6210\u529f\u83b7\u53d6\u3002"
+    "\u786e\u8ba4\u4ee5\u4e0b\u6570\u636e\u5b58\u5728\u4e14\u5408\u7406\uff1a"
+)
+for item in ["\u8425\u6536\u3001\u51c0\u5229\u6da6\u3001EPS",
+             "ROE\u3001\u5229\u6da6\u7387",
+             "\u73b0\u91d1\u6d41\u6570\u636e\uff08\u7ecf\u8425\u73b0\u91d1\u6d41\u3001\u8d44\u672c\u652f\u51fa\uff09",
+             "\u5e02\u76c8\u7387\u3001\u5e02\u51c0\u7387"]:
+    bullet(item)
+
+add_img("02_stock_detail.png")
+add_caption("\u56fe 2\uff1a\u80a1\u7968\u8be6\u60c5\u9875 \u2014 \u4ee5\u5c0f\u7c73\uff08HK01810\uff09\u4e3a\u4f8b\uff0c\u57fa\u672c\u4fe1\u606f\u3001\u4f30\u503c\u6307\u6807\u3001\u6536\u5165\u8d8b\u52bf\u548c\u5229\u6da6\u5bf9\u6bd4\u5747\u5df2\u5c31\u7eea")
+
+doc.add_heading("\u6570\u636e\u6e90\u4f18\u5148\u7ea7", level=2)
+bullet("\u96ea\u7403\uff08\u9996\u9009\uff09\uff1aA \u80a1\u548c\u6e2f\u80a1\u7684\u4e3b\u8981\u6570\u636e\u6765\u6e90")
+bullet("Finnhub / SEC EDGAR\uff1a\u7f8e\u80a1\u6570\u636e\u6765\u6e90")
+bullet("\u624b\u52a8\u4e0a\u4f20\u8d22\u62a5\uff1a\u5f53\u81ea\u52a8\u6570\u636e\u6e90\u7f3a\u5931\u6216\u4e0d\u51c6\u786e\u65f6\u7684\u8865\u5145\u65b9\u6848")
+
+doc.add_heading("\u6570\u636e\u7f3a\u5931\u600e\u4e48\u529e\uff1f", level=2)
+
+doc.add_heading("\u65b9\u5f0f\u4e00\uff1a\u4e0a\u4f20\u8d22\u62a5\u8ba9 AI \u63d0\u53d6", level=3)
+doc.add_paragraph(
+    "\u8fdb\u5165\u300c\u8d22\u62a5\u7ba1\u7406\u300d\u9875\u9762\u3002"
+    "\u7f8e\u80a1\u4f1a\u81ea\u52a8\u4ece SEC EDGAR \u83b7\u53d6\u5b63\u62a5\uff0810-Q\uff09\u548c\u5e74\u62a5\uff0810-K\uff09\u3002"
+    "\u6e2f\u80a1/A\u80a1\u53ef\u4ee5\u624b\u52a8\u4e0a\u4f20 PDF \u8d22\u62a5\uff0c"
+    "\u7136\u540e\u70b9\u51fb\u300cAI \u89e3\u6790\u300d\uff0c"
+    "\u7cfb\u7edf\u4f1a\u7528 Claude \u81ea\u52a8\u63d0\u53d6\u5173\u952e\u8d22\u52a1\u6307\u6807\u586b\u5165\u6570\u636e\u5e93\u3002"
+)
+
+add_img("03_financial_reports.png")
+add_caption("\u56fe 3\uff1a\u8d22\u62a5\u7ba1\u7406\u9875\u9762 \u2014 \u652f\u6301 SEC \u81ea\u52a8\u83b7\u53d6\u3001\u624b\u52a8\u4e0a\u4f20\u548c AI \u89e3\u6790")
+
+doc.add_heading("\u65b9\u5f0f\u4e8c\uff1a\u624b\u52a8\u4fee\u6539", level=3)
+doc.add_paragraph(
+    "\u5728\u80a1\u7968\u8be6\u60c5\u9875\u76f4\u63a5\u7f16\u8f91\u8d22\u52a1\u6570\u636e\u5b57\u6bb5\uff0c"
+    "\u9002\u7528\u4e8e\u4e2a\u522b\u6570\u503c\u7684\u4fee\u6b63\u6216\u8865\u5145\u3002"
+)
+
+add_note("\u26a0\ufe0f",
+         "\u6570\u636e\u4e0d\u5b8c\u6574\u65f6\uff0cAI \u7684\u5206\u6790\u7ed3\u8bba\u53ef\u80fd\u4e0d\u53ef\u9760\u3002"
+         "\u7cfb\u7edf\u4f1a\u5728\u5206\u6790\u4e2d\u6807\u6ce8\u6570\u636e\u7f3a\u5931\uff0c"
+         "\u4f46\u4e0d\u4f1a\u963b\u6b62\u4f60\u7ee7\u7eed\u64cd\u4f5c\u3002"
+         "\u786e\u4fdd\u6570\u636e\u5b8c\u6574\u662f\u7528\u6237\u81ea\u5df1\u7684\u8d23\u4efb\u3002",
+         RED)
+
+# ══════════════════════════════════════════════════════════
+# STEP 3
+# ══════════════════════════════════════════════════════════
+doc.add_heading("\u7b2c\u4e09\u6b65\uff1a\u8bbe\u7f6e\u6295\u8d44\u539f\u5219", level=1)
+doc.add_paragraph(
+    "\u6295\u8d44\u539f\u5219\u662f AI \u5206\u6790\u7684\u4ef7\u503c\u89c2\u6846\u67b6\uff0c"
+    "\u4f1a\u88ab\u6ce8\u5165\u5230\u65b0\u95fb\u5206\u6790\u3001\u4ea4\u6613\u8bc4\u5ba1\u3001"
+    "AI \u5bf9\u8bdd\u7b49\u6240\u6709\u73af\u8282\u3002"
+)
+
+add_img("04_principles.png")
+add_caption("\u56fe 4\uff1a\u6295\u8d44\u539f\u5219\u7ba1\u7406 \u2014 \u6bcf\u6761\u539f\u5219\u53ef\u5355\u72ec\u542f\u7528/\u7981\u7528\uff0c\u652f\u6301\u5206\u7c7b\u6807\u7b7e")
+
+doc.add_heading("\u8bbe\u7f6e\u65b9\u5f0f", level=2)
+doc.add_paragraph(
+    "\u4e0e AI \u5bf9\u8bdd\u751f\u6210\uff1a\u5728\u300cAI \u8ba8\u8bba\u300d\u9875\u9762"
+    "\u63cf\u8ff0\u4f60\u7684\u6295\u8d44\u7406\u5ff5\uff0c\u8ba9 AI \u5e2e\u4f60\u63d0\u70bc\u3002"
+    "\u6ce8\u610f\uff1a\u7cfb\u7edf\u53ea\u63d0\u53d6 AI \u6700\u540e\u4e00\u6761\u56de\u590d\u7684\u5185\u5bb9\u4f5c\u4e3a\u539f\u5219\uff0c"
+    "\u6240\u4ee5\u8bf7\u5728\u5bf9\u8bdd\u7ed3\u675f\u65f6\u8ba9 AI \u7ed9\u51fa\u5b8c\u6574\u603b\u7ed3\uff0c"
+    "\u518d\u70b9\u51fb\u53f3\u4e0a\u89d2\u300c\u63d0\u70bc\u539f\u5219\u300d\u6309\u94ae\u3002"
+)
+doc.add_paragraph(
+    "\u624b\u52a8\u7f16\u8f91\uff1a\u5728\u300c\u6295\u8d44\u539f\u5219\u300d\u9875\u9762"
+    "\u76f4\u63a5\u6dfb\u52a0\u3001\u4fee\u6539\u6216\u5220\u9664\u539f\u5219\u3002"
+    "\u6bcf\u6761\u539f\u5219\u53ef\u4ee5\u5355\u72ec\u542f\u7528/\u7981\u7528\u3002"
+)
+
+add_table(
+    ["\u7c7b\u522b", "\u8bf4\u660e", "\u793a\u4f8b"],
+    [
+        ["\u9009\u80a1 (selection)", "\u9009\u62e9\u6807\u7684\u7684\u6807\u51c6",
+         "\u8fde\u7eed\u76c8\u5229\u9a8c\u8bc1\u3001\u62a4\u57ce\u6cb3\u91cf\u5316\u3001\u4e0a\u5e02\u65f6\u95f4\u5e95\u7ebf"],
+        ["\u4f30\u503c (valuation)", "\u4e70\u5356\u4ef7\u683c\u5224\u65ad",
+         "\u73b0\u91d1\u6d41\u6838\u5fc3\u9a8c\u8bc1\u3001\u6240\u6709\u8005\u76c8\u4f59\u4f30\u503c\u6cd5"],
+        ["\u98ce\u9669 (risk)", "\u98ce\u9669\u63a7\u5236\u89c4\u5219",
+         "\u8b66\u60d5\u9ad8\u73b0\u91d1\u6d41\u9677\u9631\u3001\u4ed3\u4f4d\u4e0a\u9650"],
+        ["\u884c\u4e3a (behavior)", "\u6295\u8d44\u7eaa\u5f8b",
+         "\u6570\u636e\u5b8c\u6574\u6027\u4f18\u5148\u3001\u4e3b\u9898\u670d\u4ece\u57fa\u672c\u9762"],
+    ]
+)
+
+# ══════════════════════════════════════════════════════════
+# STEP 4
+# ══════════════════════════════════════════════════════════
+doc.add_heading("\u7b2c\u56db\u6b65\uff1a\u6bcf\u65e5\u65b0\u95fb\u5206\u6790\uff08\u65b0\u95fb\u4e2d\u5fc3\uff09", level=1)
+doc.add_paragraph(
+    "\u65b0\u95fb\u5206\u6790\u662f\u65f6\u6548\u6027\u6570\u636e\uff0c"
+    "\u53ea\u4fdd\u7559\u5f53\u5929\u7684\u5206\u6790\u7ed3\u679c\u3002"
+    "\u6bcf\u5929\u4f7f\u7528\u524d\u9700\u8981\u91cd\u65b0\u64cd\u4f5c\uff1a"
+)
+number("\u8fdb\u5165\u300c\u65b0\u95fb\u4e2d\u5fc3\u300d\u9875\u9762")
+number("\u70b9\u51fb\u53f3\u4e0a\u89d2\u300c\u5237\u65b0\u65b0\u95fb\u300d\u2014 \u7cfb\u7edf\u4ece\u4e1c\u65b9\u8d22\u5bcc\uff08A\u80a1/\u6e2f\u80a1\uff09\u548c Finnhub\uff08\u7f8e\u80a1\uff09\u6293\u53d6\u5f53\u65e5\u65b0\u95fb")
+number("\u70b9\u51fb\u300c\u5206\u6790\u65b0\u95fb\u300d\u2192 \u52fe\u9009\u8981\u5206\u6790\u7684\u80a1\u7968 \u2192 \u786e\u8ba4")
+number("\u7b49\u5f85 AI \u5206\u6790\u5b8c\u6210\uff08\u6bcf\u53ea\u80a1\u7968\u7ea6 20-30 \u79d2\uff09")
+
+add_img("05_media.png")
+add_caption("\u56fe 5\uff1a\u65b0\u95fb\u4e2d\u5fc3 \u2014 \u5de6\u4fa7\u4e3a\u6700\u65b0\u65b0\u95fb\u5217\u8868\uff0c\u53f3\u4fa7\u5c55\u793a AI \u5206\u6790\u7ed3\u679c\uff08\u60c5\u7eea\u3001\u6458\u8981\u3001\u5173\u952e\u4e8b\u4ef6\u3001\u539f\u5219\u5f71\u54cd\uff09")
+
+doc.add_paragraph(
+    "\u5206\u6790\u7ed3\u679c\u5305\u62ec\uff1a\u60c5\u7eea\u5224\u65ad\uff08\u770b\u6da8/\u770b\u8dcc/\u4e2d\u6027\uff09\u3001"
+    "\u7efc\u5408\u5206\u6790\u6458\u8981\u3001\u5173\u952e\u4e8b\u4ef6\u3001"
+    "\u4ee5\u53ca\u4e0e\u4f60\u7684\u6295\u8d44\u539f\u5219\u7684\u5173\u8054\u8bc4\u4f30\u3002"
+)
+
+add_note("\u26a0\ufe0f",
+         "\u5206\u6790\u7ed3\u679c\u4f1a\u81ea\u52a8\u6ce8\u5165 AI \u5bf9\u8bdd\u3001\u4ea4\u6613\u65e5\u5fd7\u548c\u4eea\u8868\u76d8\u3002"
+         "\u5982\u679c\u5f53\u5929\u6ca1\u6709\u6267\u884c\u65b0\u95fb\u5206\u6790\uff0c"
+         "\u8fd9\u4e9b\u9875\u9762\u7684\u65b0\u95fb\u76f8\u5173\u5185\u5bb9\u4f1a\u663e\u793a\u201c\u6682\u65e0\u201d\u3002"
+         "\u9694\u5929\u540e\u5206\u6790\u4f1a\u81ea\u52a8\u6e05\u9664\u3002",
+         RED)
+
+# ══════════════════════════════════════════════════════════
+# STEP 5
+# ══════════════════════════════════════════════════════════
+doc.add_heading("\u7b2c\u4e94\u6b65\uff1a\u4f7f\u7528 AI \u529f\u80fd", level=1)
+doc.add_paragraph(
+    "\u5b8c\u6210\u4ee5\u4e0a\u51c6\u5907\u540e\uff08\u80a1\u7968\u6570\u636e\u5b8c\u6574 + "
+    "\u6295\u8d44\u539f\u5219\u5df2\u8bbe + \u5f53\u65e5\u65b0\u95fb\u5df2\u5206\u6790\uff09\uff0c"
+    "\u5373\u53ef\u4f7f\u7528\u4ee5\u4e0b\u4e09\u4e2a\u6838\u5fc3\u5206\u6790\u529f\u80fd\uff1a"
+)
+
+doc.add_heading("AI \u5bf9\u8bdd", level=2)
+doc.add_paragraph(
+    "\u4e0e AI \u6295\u8d44\u52a9\u624b\u8ba8\u8bba\u4efb\u610f\u80a1\u7968\u95ee\u9898\u3002"
+    "AI \u4f1a\u81ea\u52a8\u7ed3\u5408\uff1a\u80a1\u7968\u6c60\u6570\u636e + \u8d22\u52a1\u6570\u636e + "
+    "\u6295\u8d44\u539f\u5219 + \u5f53\u65e5\u65b0\u95fb\u5206\u6790\u3002"
+)
+
+add_img("07_agent_chat.png")
+add_caption("\u56fe 6\uff1aAI \u5bf9\u8bdd \u2014 \u5de6\u4fa7\u5386\u53f2\u5bf9\u8bdd\u5217\u8868\uff0c\u53f3\u4fa7\u5bf9\u8bdd\u5185\u5bb9\uff0c\u5e95\u90e8\u6709\u5feb\u6377\u5206\u6790\u6309\u94ae")
+
+bullet("\u5de6\u4fa7\u662f\u5386\u53f2\u5bf9\u8bdd\u5217\u8868\uff0c\u53ef\u4ee5\u521b\u5efa\u591a\u4e2a\u5bf9\u8bdd\u5206\u4e3b\u9898\u7ba1\u7406")
+bullet("\u8f93\u5165\u6846\u652f\u6301 @AAPL \u683c\u5f0f\u5f15\u7528\u7279\u5b9a\u80a1\u7968")
+bullet("\u5e95\u90e8\u6709\u300c\u62a4\u57ce\u6cb3\u5206\u6790\u300d\u300c\u4ef7\u503c\u7b5b\u9009\u300d\u300c\u98ce\u9669\u63d0\u793a\u300d\u5feb\u6377\u6309\u94ae")
+bullet("\u53f3\u4e0a\u89d2\u300c\u63d0\u70bc\u539f\u5219\u300d\u53ef\u4ee5\u4ece\u5bf9\u8bdd\u4e2d\u63d0\u53d6\u6295\u8d44\u539f\u5219")
+
+doc.add_heading("\u4ea4\u6613\u65e5\u8bb0", level=2)
+doc.add_paragraph(
+    "\u8bb0\u5f55\u4f60\u7684\u4e70\u5356\u51b3\u7b56\u3002"
+    "AI \u4f1a\u81ea\u52a8\u8bc4\u5ba1\u6bcf\u7b14\u4ea4\u6613\u662f\u5426\u7b26\u5408\u4f60\u7684\u6295\u8d44\u539f\u5219\uff0c"
+    "\u5e76\u8003\u8651\u5f53\u65e5\u65b0\u95fb\u5bf9\u51b3\u7b56\u5408\u7406\u6027\u7684\u5f71\u54cd\u3002"
+)
+
+add_img("08_trade_journal.png")
+add_caption("\u56fe 7\uff1a\u4ea4\u6613\u65e5\u8bb0 \u2014 \u8bb0\u5f55\u4ea4\u6613\u3001AI \u81ea\u52a8\u8bc4\u5ba1\u3001\u98ce\u9669\u8bc4\u5206\u7edf\u8ba1")
+
+doc.add_paragraph(
+    "\u70b9\u51fb\u300c\u8bb0\u5f55\u4ea4\u6613\u300d\uff0c\u586b\u5165\u80a1\u7968\u4ee3\u7801\u3001"
+    "\u4e70/\u5356\u3001\u4ef7\u683c\u3001\u6570\u91cf\u548c\u7406\u7531\uff0c"
+    "\u7cfb\u7edf\u4f1a\u81ea\u52a8\u8ba1\u7b97\u98ce\u9669\u8bc4\u5206\u3001"
+    "AI \u8bc4\u5ba1\u4ea4\u6613\u662f\u5426\u8fdd\u53cd\u6295\u8d44\u539f\u5219\u3001"
+    "\u5e76\u7edf\u8ba1\u5386\u53f2\u4ea4\u6613\u6570\u636e\u3002"
+)
+
+doc.add_heading("Dashboard AI \u9009\u80a1\u5efa\u8bae", level=2)
+doc.add_paragraph("\u9996\u9875\u4eea\u8868\u76d8\u63d0\u4f9b\u6574\u4f53\u6982\u89c8\u548c AI \u9009\u80a1\u5efa\u8bae\u3002")
+
+add_img("06_dashboard.png")
+add_caption("\u56fe 8\uff1a\u4eea\u8868\u76d8 \u2014 \u80a1\u7968\u6c60\u6982\u89c8\u3001\u884c\u4e1a/\u5e02\u503c\u5206\u5e03\u56fe\u3001AI \u9009\u80a1\u5efa\u8bae")
+
+bullet("\u9876\u90e8\u5361\u7247\uff1a\u80a1\u7968\u6c60\u6570\u91cf\u3001\u6295\u8d44\u539f\u5219\u6570\u3001AI \u5bf9\u8bdd\u8bb0\u5f55")
+bullet("\u4e2d\u95f4\u56fe\u8868\uff1a\u884c\u4e1a\u5206\u5e03\u997c\u56fe\u548c\u5e02\u503c\u5206\u5e03\u67f1\u72b6\u56fe")
+bullet(
+    "\u53f3\u4e0b\u89d2\u300cAI \u9009\u80a1\u5efa\u8bae\u300d\uff1a"
+    "AI \u7efc\u5408\u5206\u6790\u6574\u4e2a\u80a1\u7968\u6c60\uff0c"
+    "\u63a8\u8350 2-3 \u53ea\u5f53\u524d\u6700\u503c\u5f97\u5173\u6ce8\u7684\u80a1\u7968\uff0c"
+    "\u5efa\u8bae\u4f1a\u7ed3\u5408\u6700\u65b0\u65b0\u95fb\u548c\u4f60\u7684\u6295\u8d44\u539f\u5219"
+)
+
+# ══════════════════════════════════════════════════════════
+# DAILY WORKFLOW
+# ══════════════════════════════════════════════════════════
+doc.add_heading("\u6bcf\u65e5\u63a8\u8350\u5de5\u4f5c\u6d41", level=1)
+
+add_table(
+    ["\u987a\u5e8f", "\u64cd\u4f5c", "\u9875\u9762"],
+    [
+        ["1", "\u83b7\u53d6\u5e76\u5206\u6790\u5f53\u65e5\u65b0\u95fb", "\u65b0\u95fb\u4e2d\u5fc3"],
+        ["2", "\u67e5\u770b AI \u9009\u80a1\u5efa\u8bae", "\u4eea\u8868\u76d8"],
+        ["3", "\u5bf9\u611f\u5174\u8da3\u7684\u80a1\u7968\u6df1\u5165\u5206\u6790", "AI \u8ba8\u8bba"],
+        ["4", "\u505a\u51fa\u51b3\u7b56\u540e\u8bb0\u5f55\u4ea4\u6613", "\u4ea4\u6613\u65e5\u8bb0"],
+    ]
+)
+
+# ══════════════════════════════════════════════════════════
+# FAQ
+# ══════════════════════════════════════════════════════════
+doc.add_heading("\u5e38\u89c1\u95ee\u9898", level=1)
+
+faqs = [
+    ("AI \u5206\u6790\u4e00\u76f4\u8f6c\u5708\u4e0d\u51fa\u7ed3\u679c\uff1f",
+     "\u5237\u65b0\u9875\u9762\uff08Cmd+Shift+R\uff09\u91cd\u8bd5\u3002"
+     "\u5355\u53ea\u80a1\u7968\u5206\u6790\u901a\u5e38 20-30 \u79d2\u5b8c\u6210\uff0c"
+     "\u8d85\u8fc7 2 \u5206\u949f\u4f1a\u81ea\u52a8\u8d85\u65f6\u3002"),
+    ("\u65b0\u95fb\u83b7\u53d6\u4e3a 0 \u6761\uff1f",
+     "\u975e\u4ea4\u6613\u65e5\u6216\u5f53\u5929\u8be5\u80a1\u7968\u6682\u65e0\u65b0\u95fb\u5c5e\u6b63\u5e38\u60c5\u51b5\u3002"
+     "\u7f8e\u80a1\u9700\u8981 FINNHUB_API_KEY\uff0c"
+     "A\u80a1/\u6e2f\u80a1\u4f7f\u7528\u4e1c\u65b9\u8d22\u5bcc\u514d\u8d39\u63a5\u53e3\u3002"),
+    ("\u4e3a\u4ec0\u4e48 AI \u5206\u6790\u603b\u8bf4\u201c\u6570\u636e\u4e0d\u8db3\u201d\uff1f",
+     "\u68c0\u67e5\u8be5\u80a1\u7968\u7684\u8d22\u52a1\u6570\u636e\u662f\u5426\u5b8c\u6574\u3002"
+     "\u8fdb\u5165\u80a1\u7968\u8be6\u60c5\u9875\u67e5\u770b\uff0c"
+     "\u7f3a\u5931\u7684\u6570\u636e\u53ef\u4ee5\u901a\u8fc7\u4e0a\u4f20\u8d22\u62a5\u6216\u624b\u52a8\u8865\u5145\u3002"),
+    ("\u6295\u8d44\u539f\u5219\u4ece AI \u5bf9\u8bdd\u63d0\u53d6\u4e0d\u51c6\u786e\uff1f",
+     "\u7cfb\u7edf\u53ea\u63d0\u53d6 AI \u6700\u540e\u4e00\u6761\u6d88\u606f\u7684\u5185\u5bb9\u3002"
+     "\u5efa\u8bae\u5728\u5bf9\u8bdd\u672b\u5c3e\u660e\u786e\u8981\u6c42 AI \u7528\u5b8c\u6574\u683c\u5f0f\u603b\u7ed3\u539f\u5219\uff0c"
+     "\u7136\u540e\u518d\u70b9\u51fb\u300c\u63d0\u70bc\u539f\u5219\u300d\u3002"
+     "\u63d0\u53d6\u540e\u53ef\u5728\u539f\u5219\u9875\u9762\u624b\u52a8\u5fae\u8c03\u3002"),
+    ("\u6628\u5929\u7684\u65b0\u95fb\u5206\u6790\u4eca\u5929\u8fd8\u80fd\u7528\u5417\uff1f",
+     "\u4e0d\u80fd\u3002\u65b0\u95fb\u5206\u6790\u53ea\u4fdd\u7559\u5f53\u5929\u7684\uff0c"
+     "\u9694\u5929\u81ea\u52a8\u6e05\u9664\u3002"
+     "\u6bcf\u5929\u9700\u8981\u91cd\u65b0\u83b7\u53d6\u548c\u5206\u6790\u65b0\u95fb\u3002"),
+]
+
+for q, a in faqs:
+    p = doc.add_paragraph()
+    run_q = p.add_run(f"Q\uff1a{q}")
+    run_q.font.bold = True
+    run_q.font.size = Pt(11)
+    p_a = doc.add_paragraph(f"A\uff1a{a}")
+    p_a.paragraph_format.space_after = Pt(10)
+
+# ── Save ──
+doc.save(OUT)
+print(f"Saved: {OUT}")
+print(f"Size: {os.path.getsize(OUT) / 1024:.0f} KB")

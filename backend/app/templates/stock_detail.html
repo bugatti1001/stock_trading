@@ -1,0 +1,434 @@
+{% extends "base.html" %}
+
+{% block title %}{{ stock.symbol }} - {{ stock.name }} - 股票分析系统{% endblock %}
+
+{% block content %}
+<!-- 顶部导航 -->
+<div class="row mb-4">
+    <div class="col-md-8">
+        <h1>
+            <i class="bi bi-graph-up"></i>
+            <span class="stock-symbol">{{ stock.symbol }}</span> - {{ stock.name }}
+        </h1>
+        {% if stock.sector %}
+        <p class="text-muted">
+            <span class="badge bg-secondary">{{ stock.sector }}</span>
+            {% if stock.industry %} / {{ stock.industry }}{% endif %}
+        </p>
+        {% endif %}
+    </div>
+    <div class="col-md-4 text-end">
+        <a href="/api/stocks/{{ stock.symbol }}/financials/export" class="btn btn-outline-success">
+            <i class="bi bi-download"></i> 导出财务数据
+        </a>
+        <button class="btn btn-outline-success" onclick="refreshStockData('{{ stock.symbol }}')">
+            <i class="bi bi-arrow-repeat"></i> 刷新数据
+        </button>
+        <a href="{{ url_for('web.stock_pool') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> 返回股票池
+        </a>
+    </div>
+</div>
+
+<!-- 基本信息卡片 -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-info-circle"></i> 基本信息</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-3">
+                <p><strong>交易所：</strong> {{ stock.exchange or 'N/A' }}</p>
+                <p><strong>IPO日期：</strong> {{ stock.ipo_date.strftime('%Y-%m-%d') if stock.ipo_date else 'N/A' }}</p>
+                <p><strong>员工数：</strong> {{ "{:,}".format(stock.employees) if stock.employees else 'N/A' }}</p>
+            </div>
+            <div class="col-md-3">
+                <p><strong>当前股价：</strong>
+                    {% if stock.current_price %}
+                        {{ currency_sign }}{{ "%.2f"|format(stock.current_price) }}
+                    {% else %}
+                        <span class="text-muted">N/A</span>
+                    {% endif %}
+                </p>
+                <p><strong>市值：</strong>
+                    {% if stock.market_cap %}
+                        {{ currency_sign }}{{ "%.1f"|format(stock.market_cap) }}B
+                    {% else %}
+                        <span class="text-muted">N/A</span>
+                    {% endif %}
+                </p>
+                <p><strong>成交量：</strong> {{ "{:,}".format(stock.volume|int) if stock.volume else 'N/A' }}</p>
+            </div>
+            <div class="col-md-3">
+                <p><strong>P/E比率：</strong> {{ "%.2f"|format(stock.pe_ratio) if stock.pe_ratio else 'N/A' }}</p>
+                <p><strong>P/B比率：</strong> {{ "%.2f"|format(stock.pb_ratio) if stock.pb_ratio else 'N/A' }}</p>
+                <p><strong>每股收益：</strong>
+                    {% if stock.eps %}
+                        {{ currency_sign }}{{ "%.2f"|format(stock.eps) }}
+                    {% else %}
+                        <span class="text-muted">N/A</span>
+                    {% endif %}
+                </p>
+            </div>
+            <div class="col-md-3">
+                <p><strong>股息率：</strong>
+                    {% if stock.dividend_yield %}
+                        {{ "%.2f"|format(stock.dividend_yield * 100) }}%
+                    {% else %}
+                        <span class="text-muted">N/A</span>
+                    {% endif %}
+                </p>
+                {% if stock.website %}
+                <p><strong>网站：</strong> <a href="{{ stock.website }}" target="_blank" rel="noopener">访问 <i class="bi bi-box-arrow-up-right"></i></a></p>
+                {% endif %}
+            </div>
+        </div>
+        {% if stock.description %}
+        <hr>
+        <p><strong>公司简介：</strong></p>
+        <p class="text-muted">{{ stock.description }}</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 关键指标概览 -->
+{% if financials %}
+{% set latest = financials[0] %}
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2">市值 & P/E</h6>
+                <h3 class="card-title mb-0">{{ currency_sign }}{{ "%.1f"|format(stock.market_cap) }}B</h3>
+                <small>P/E: {{ "%.2f"|format(stock.pe_ratio) if stock.pe_ratio else 'N/A' }}</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2">营收 & 净利</h6>
+                <h3 class="card-title mb-0">{{ currency_sign ~ "%.2f"|format(latest.revenue / 1e9) ~ 'B' if latest.revenue else 'N/A' }}</h3>
+                <small>净利: {{ currency_sign ~ "%.2f"|format(latest.net_income / 1e9) ~ 'B' if latest.net_income else 'N/A' }}</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-info text-white">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2">经营现金流</h6>
+                <h3 class="card-title mb-0">{{ currency_sign ~ "%.2f"|format(latest.operating_cash_flow / 1e9) ~ 'B' if latest.operating_cash_flow else 'N/A' }}</h3>
+                <small>Capex: {{ currency_sign ~ "%.2f"|format(latest.capital_expenditure / 1e9) ~ 'B' if latest.capital_expenditure else 'N/A' }}</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-warning text-dark">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2">总资产 & 净资产</h6>
+                <h3 class="card-title mb-0">{{ currency_sign ~ "%.2f"|format(latest.total_assets / 1e9) ~ 'B' if latest.total_assets else 'N/A' }}</h3>
+                <small>净资产: {{ currency_sign ~ "%.2f"|format(latest.total_equity / 1e9) ~ 'B' if latest.total_equity else 'N/A' }}</small>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- 财务趋势图表 -->
+{% if financials and financials|length > 1 %}
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0"><i class="bi bi-graph-up"></i> 收入趋势</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="revenueChart" height="250"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0"><i class="bi bi-bar-chart"></i> 利润对比</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="profitChart" height="250"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0"><i class="bi bi-percent"></i> 关键比率趋势</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="ratiosChart" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- 财务数据表格 -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-table"></i> 历史财务数据</h5>
+    </div>
+    <div class="card-body p-0">
+        {% if financials %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>财年</th>
+                        <th>周期</th>
+                        <th>收入</th>
+                        <th>运营收入</th>
+                        <th>净收入</th>
+                        <th>归母利润</th>
+                        <th>经营现金流</th>
+                        <th>总资产</th>
+                        <th>货币</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for fin in financials %}
+                    <tr>
+                        <td><strong>{{ fin.fiscal_year }}</strong></td>
+                        <td><span class="badge bg-secondary">{{ fin.period.value }}</span></td>
+                        <td>
+                            {% if fin.revenue %}
+                                {{ currency_sign }}{{ "%.2f"|format(fin.revenue / 1e9) }}B
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if fin.operating_income %}
+                                {{ currency_sign }}{{ "%.2f"|format(fin.operating_income / 1e9) }}B
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if fin.net_income %}
+                                <span class="{% if fin.net_income > 0 %}text-success{% else %}text-danger{% endif %}">
+                                    {{ currency_sign }}{{ "%.2f"|format(fin.net_income / 1e9) }}B
+                                </span>
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if fin.net_income_to_parent %}
+                                {{ currency_sign }}{{ "%.2f"|format(fin.net_income_to_parent / 1e9) }}B
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if fin.operating_cash_flow %}
+                                {{ currency_sign }}{{ "%.2f"|format(fin.operating_cash_flow / 1e9) }}B
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if fin.total_assets %}
+                                {{ currency_sign }}{{ "%.2f"|format(fin.total_assets / 1e9) }}B
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ fin.currency or 'USD' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-5">
+            <i class="bi bi-inbox" style="font-size: 3rem; opacity: 0.5;"></i>
+            <p class="text-muted mt-3">暂无财务数据</p>
+            <button class="btn btn-primary" onclick="refreshStockData('{{ stock.symbol }}')">
+                <i class="bi bi-download"></i> 获取财务数据
+            </button>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// 刷新股票数据
+function refreshStockData(symbol) {
+    if (!confirm(`确定要刷新 ${symbol} 的数据吗？这可能需要几秒钟。`)) return;
+
+    utils.showToast('正在刷新数据...', 'info');
+
+    api.stocks.refresh(symbol)
+        .then(data => {
+            if (data.success) {
+                if (data.warning) {
+                    utils.showToast(`⚠️ ${data.warning}`, 'warning');
+                } else {
+                    utils.showToast('数据刷新成功！', 'success');
+                    setTimeout(() => location.reload(), 1500);
+                }
+            } else {
+                utils.showToast(`刷新失败: ${data.error}`, 'danger');
+            }
+        })
+        .catch(error => {
+            utils.showToast(`错误: ${error.message}`, 'danger');
+        });
+}
+
+{% if financials and financials|length > 1 %}
+const currencySign = '{{ currency_sign }}';
+// 准备图表数据（手动构建避免序列化问题）
+const years = [{% for f in financials|reverse %}{{ f.fiscal_year }}{% if not loop.last %},{% endif %}{% endfor %}];
+const revenues = [{% for f in financials|reverse %}{{ f.revenue / 1e9 if f.revenue else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+const operatingIncomes = [{% for f in financials|reverse %}{{ f.operating_income / 1e9 if f.operating_income else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+const netIncomes = [{% for f in financials|reverse %}{{ f.net_income / 1e9 if f.net_income else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+const ocfs = [{% for f in financials|reverse %}{{ f.operating_cash_flow / 1e9 if f.operating_cash_flow else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+const totalAssets = [{% for f in financials|reverse %}{{ f.total_assets / 1e9 if f.total_assets else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+const totalEquity = [{% for f in financials|reverse %}{{ f.total_equity / 1e9 if f.total_equity else 'null' }}{% if not loop.last %},{% endif %}{% endfor %}];
+
+// 收入趋势图
+const revenueCtx = document.getElementById('revenueChart').getContext('2d');
+new Chart(revenueCtx, {
+    type: 'line',
+    data: {
+        labels: years,
+        datasets: [{
+            label: '总收入 (亿美元)',
+            data: revenues,
+            borderColor: '#0d6efd',
+            backgroundColor: '#0d6efd20',
+            tension: 0.4,
+            fill: true
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: false }
+        },
+        scales: {
+            y: {
+                beginAtZero: true,
+                ticks: {
+                    callback: function(value) {
+                        return currencySign + value.toFixed(1) + 'B';
+                    }
+                }
+            }
+        }
+    }
+});
+
+// 利润对比图
+const profitCtx = document.getElementById('profitChart').getContext('2d');
+new Chart(profitCtx, {
+    type: 'bar',
+    data: {
+        labels: years,
+        datasets: [
+            {
+                label: '总收入',
+                data: revenues,
+                backgroundColor: '#0d6efd'
+            },
+            {
+                label: '运营收入',
+                data: operatingIncomes,
+                backgroundColor: '#6610f2'
+            },
+            {
+                label: '净收入',
+                data: netIncomes,
+                backgroundColor: '#198754'
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { position: 'top' }
+        },
+        scales: {
+            y: {
+                beginAtZero: true,
+                ticks: {
+                    callback: function(value) {
+                        return currencySign + value.toFixed(1) + 'B';
+                    }
+                }
+            }
+        }
+    }
+});
+
+// 资产负债趋势图
+const ratiosCtx = document.getElementById('ratiosChart').getContext('2d');
+new Chart(ratiosCtx, {
+    type: 'line',
+    data: {
+        labels: years,
+        datasets: [
+            {
+                label: '经营现金流 (B)',
+                data: ocfs,
+                borderColor: '#198754',
+                backgroundColor: '#19875420',
+                tension: 0.4
+            },
+            {
+                label: '总资产 (B)',
+                data: totalAssets,
+                borderColor: '#0dcaf0',
+                backgroundColor: '#0dcaf020',
+                tension: 0.4
+            },
+            {
+                label: '净资产 (B)',
+                data: totalEquity,
+                borderColor: '#ffc107',
+                backgroundColor: '#ffc10720',
+                tension: 0.4
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+            mode: 'index',
+            intersect: false
+        },
+        plugins: {
+            legend: { position: 'top' }
+        },
+        scales: {
+            y: {
+                ticks: {
+                    callback: function(value) {
+                        return currencySign + value.toFixed(1) + 'B';
+                    }
+                }
+            }
+        }
+    }
+});
+{% endif %}
+</script>
+{% endblock %}

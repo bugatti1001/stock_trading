@@ -1,0 +1,46 @@
+# Web Framework
+flask==3.0.0
+flask-cors==4.0.0
+flask-sqlalchemy==3.1.1
+
+# Production Server
+gunicorn==21.2.0
+
+# Database
+sqlalchemy==2.0.23
+alembic==1.13.1
+
+# Data Processing
+pandas==2.1.4
+numpy==1.26.2
+
+# Financial Data APIs
+yfinance==0.2.33
+alpha-vantage==2.3.1
+requests==2.31.0
+beautifulsoup4==4.12.2
+
+# News & Web Scraping
+feedparser==6.0.10
+newspaper3k==0.2.8
+
+# Scheduling & Background Tasks
+apscheduler==3.10.4
+
+# Data Validation
+pydantic==2.5.3
+
+# Utils
+python-dotenv==1.0.0
+python-dateutil==2.8.2
+
+# AI / LLM
+openai>=1.0.0
+anthropic>=0.20.0
+pypdf>=3.0.0
+
+# Development
+pytest==7.4.3
+pytest-cov==4.1.0
+black==23.12.1
+flake8==7.0.0

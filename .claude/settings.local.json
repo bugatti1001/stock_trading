@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(lsof:*)",
+      "Bash(curl:*)",
+      "Bash(source:*)",
+      "Bash(python:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(xargs kill:*)",
+      "Bash(xargs:*)",
+      "Bash(open:*)",
+      "WebFetch(domain:programmablesearchengine.google.com)",
+      "Bash(pip3 list:*)",
+      "Bash(sqlite3:*)",
+      "Bash(venv/bin/python3 -c \"\nimport os\nos.environ[''ANTHROPIC_API_KEY''] = ''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''\nimport anthropic\nclient = anthropic.Anthropic\\(\\)\n\n# Test short name\ntry:\n    msg = client.messages.create\\(\n        model=''claude-sonnet-4-5'',\n        max_tokens=10,\n        messages=[{''role'': ''user'', ''content'': ''Say hi''}]\n    \\)\n    print\\(''SUCCESS with claude-sonnet-4-5:'', msg.content[0].text\\)\nexcept anthropic.NotFoundError as e:\n    print\\(''NOT FOUND with claude-sonnet-4-5:'', str\\(e\\)[:200]\\)\nexcept anthropic.BadRequestError as e:\n    print\\(''BAD REQUEST with claude-sonnet-4-5:'', str\\(e\\)[:200]\\)\nexcept Exception as e:\n    print\\(''ERROR with claude-sonnet-4-5:'', type\\(e\\).__name__, str\\(e\\)[:200]\\)\n\")",
+      "Bash(venv/bin/python3 -c \"\nimport os, sys, logging\nsys.path.insert\\(0, ''.''\\)\nos.environ[''ANTHROPIC_API_KEY''] = ''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''\nlogging.basicConfig\\(level=logging.INFO\\)\n\nfrom app.services.ai_extractor import extract_financials\n\ntry:\n    result = extract_financials\\(''data/sec_filings/TSLA/TSLA_0001628280-25-045968_tsla-20250930.htm'', ''claude-sonnet-4-5''\\)\n    print\\(''SUCCESS! Fields:'', sum\\(1 for v in result.values\\(\\) if v is not None\\)\\)\n    print\\(''Revenue:'', result.get\\(''revenue''\\)\\)\n    print\\(''Net Income:'', result.get\\(''net_income''\\)\\)\nexcept Exception as e:\n    print\\(f''FAILED: {type\\(e\\).__name__}: {e}''\\)\n\")",
+      "Bash(venv/bin/python:*)",
+      "Bash(xxd:*)",
+      "Bash(/Users/hongyuany/Documents/claude_folder/stock_trading/backend/venv/bin/python:*)",
+      "Bash(bash -c 'source backend/venv/bin/activate && python3 -c \"\"\nimport sys\nsys.path.insert\\(0, \\\\\"\".\\\\\"\"\\)\nfrom backend.app.config.database import db_session\nfrom backend.app.models.financial_data import FinancialData\nfrom backend.app.models.stock import Stock\nfrom sqlalchemy import desc\n\nstock = db_session.query\\(Stock\\).filter_by\\(in_pool=True, is_active=True\\).first\\(\\)\nif stock:\n    fd = db_session.query\\(FinancialData\\).filter_by\\(stock_id=stock.id\\).order_by\\(desc\\(FinancialData.fiscal_year\\)\\).first\\(\\)\n    if fd:\n        print\\(f\\\\\"\"Stock: {stock.symbol}, fd.id={fd.id}, year={fd.fiscal_year}\\\\\"\"\\)\n        print\\(f\\\\\"\"gross_margin={fd.gross_margin}, roic={fd.roic}\\\\\"\"\\)\n        print\\(f\\\\\"\"current_ratio={fd.current_ratio}\\\\\"\"\\)\n    else:\n        print\\(f\\\\\"\"No FD for {stock.symbol}\\\\\"\"\\)\n\"\"')",
+      "Bash(bash -c 'source venv/bin/activate && python3 -c \"\"\nfrom app.config.database import db_session\nfrom app.models.financial_data import FinancialData\nfrom app.models.stock import Stock\nfrom sqlalchemy import desc\n\nstock = db_session.query\\(Stock\\).filter_by\\(in_pool=True, is_active=True\\).first\\(\\)\nif stock:\n    fd = db_session.query\\(FinancialData\\).filter_by\\(stock_id=stock.id\\).order_by\\(desc\\(FinancialData.fiscal_year\\)\\).first\\(\\)\n    if fd:\n        print\\(f\\\\\"\"Stock: {stock.symbol}, fd.id={fd.id}, year={fd.fiscal_year}\\\\\"\"\\)\n        print\\(f\\\\\"\"gross_margin={fd.gross_margin}, roic={fd.roic}\\\\\"\"\\)\n        print\\(f\\\\\"\"current_ratio={fd.current_ratio}\\\\\"\"\\)\n        print\\(f\\\\\"\"total_assets={fd.total_assets}, total_liabilities={fd.total_liabilities}\\\\\"\"\\)\n        print\\(f\\\\\"\"total_equity={fd.total_equity}\\\\\"\"\\)\n    else:\n        print\\(f\\\\\"\"No FD for {stock.symbol}\\\\\"\"\\)\n\"\"')",
+      "Bash(bash -c 'source venv/bin/activate && python3 -c \"\"\nfrom app.config.database import db_session\nfrom app.models.annual_report import AnnualReport\nfrom app.models.stock import Stock\n\nstock = db_session.query\\(Stock\\).filter_by\\(symbol=\\\\\"\"INTC\\\\\"\"\\).first\\(\\)\nif stock:\n    reports = db_session.query\\(AnnualReport\\).filter_by\\(stock_id=stock.id\\).all\\(\\)\n    for r in reports:\n        print\\(f\\\\\"\"id={r.id} year={r.fiscal_year} downloaded={r.is_downloaded} processed={r.is_processed} error={r.analysis_error}\\\\\"\"\\)\nelse:\n    print\\(\\\\\"\"INTC not found\\\\\"\"\\)\n\"\"')",
+      "Bash(bash -c:*)",
+      "Bash(pip3 install:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(venv/bin/python3 -c \"\nfrom app.utils.validation import validate_symbol\nsym, err = validate_symbol\\(''AAPL''\\)\nassert sym == ''AAPL'' and err is None\nsym, err = validate_symbol\\(''sh600519''\\)\nassert sym == ''SH600519'' and err is None\nsym, err = validate_symbol\\(''SZ000858''\\)\nassert sym == ''SZ000858'' and err is None\nsym, err = validate_symbol\\(''hk00700''\\)\nassert sym == ''HK00700'' and err is None\nsym, err = validate_symbol\\(''123''\\)\nassert err is not None\nprint\\(''validation: ALL TESTS PASSED''\\)\n\")",
+      "Bash(venv/bin/python3:*)",
+      "WebFetch(domain:xueqiu.com)",
+      "Bash(backend/venv/bin/python:*)",
+      "Bash(docker-compose up -d --build 2>&1)",
+      "Bash(docker compose up -d --build 2>&1)",
+      "Bash(brew install --cask docker 2>&1)",
+      "Bash(cp -R /Volumes/Docker/Docker.app /Applications/ 2>&1 && echo \"Docker.app copied to /Applications\" && hdiutil detach /Volumes/Docker -quiet 2>&1)",
+      "Bash(/Applications/Docker.app/Contents/Resources/bin/docker compose up -d --build 2>&1)",
+      "Bash(cd /Users/hongyuany/Documents/claude_folder/stock_trading/backend && source venv/bin/activate && pip install gunicorn 2>&1 | tail -3)",
+      "Bash(source venv/bin/activate && gunicorn --config gunicorn.conf.py run:app 2>&1)",
+      "Bash(find /Users/hongyuany/Documents/claude_folder/stock_trading/backend/app -type f -name \"*.py\" -exec wc -l {} + | tail -1)"
+    ]
+  }
+}

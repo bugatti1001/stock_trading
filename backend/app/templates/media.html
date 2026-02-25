@@ -1,0 +1,566 @@
+{% extends "base.html" %}
+
+{% block title %}新闻中心 - 股票分析系统{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Sentiment badges */
+    .sentiment-bullish { background: #198754; color: #fff; }
+    .sentiment-bearish { background: #dc3545; color: #fff; }
+    .sentiment-neutral { background: #6c757d; color: #fff; }
+    .sentiment-badge { font-size: 0.85rem; padding: 0.3em 0.7em; border-radius: 0.5rem; }
+
+    /* News card styles */
+    .news-card { border-left: 3px solid #0d6efd; transition: box-shadow 0.2s; }
+    .news-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .stock-symbol-badge {
+        display: inline-block; background: #e7f1ff; color: #0d6efd;
+        border-radius: 4px; padding: 1px 8px; font-weight: 600; font-size: 0.8rem;
+        white-space: nowrap;
+    }
+
+    /* Skeleton loader */
+    .skeleton {
+        background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+        background-size: 200% 100%; animation: shimmer 1.5s infinite;
+        border-radius: 4px; height: 1em; margin-bottom: 0.5em;
+    }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+    /* Analysis card */
+    .analysis-card { border: 1px solid #dee2e6; border-radius: 8px; overflow: hidden; }
+    .analysis-card .card-header { background: #f8f9fa; padding: 0.6rem 1rem; }
+    .analysis-card .card-body { padding: 0.8rem 1rem; }
+    .analysis-card .card-body p { margin-bottom: 0.4rem; }
+    .analysis-card .card-body ul { margin-bottom: 0.4rem; padding-left: 1.2rem; }
+    .analysis-card .card-body li { margin-bottom: 0.15rem; }
+
+    /* Stock filter */
+    .stock-filter-badge {
+        cursor: pointer; border: 1px solid #dee2e6; transition: all 0.2s;
+    }
+    .stock-filter-badge.active {
+        background: #0d6efd !important; color: #fff !important; border-color: #0d6efd;
+    }
+    .stock-filter-badge:hover { border-color: #0d6efd; }
+
+    /* Column scroll */
+    .scroll-col { max-height: 80vh; overflow-y: auto; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Page header -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0"><i class="bi bi-newspaper me-2 text-primary"></i>新闻中心</h4>
+    <div class="d-flex gap-2">
+        <a href="/api/media/analyses/export" class="btn btn-outline-success btn-sm">
+            <i class="bi bi-download me-1"></i>导出分析
+        </a>
+        <button class="btn btn-outline-primary btn-sm" id="refreshBtn" onclick="refreshNews()">
+            <i class="bi bi-arrow-clockwise me-1"></i>刷新新闻
+        </button>
+        <button class="btn btn-primary btn-sm" id="analyzeBtn" onclick="analyzeNews()" disabled>
+            <i class="bi bi-robot me-1"></i>分析新闻
+        </button>
+    </div>
+</div>
+
+<!-- Status bar -->
+<div class="alert alert-info d-flex align-items-center mb-3 py-2" id="statusBar">
+    <div class="spinner-border spinner-border-sm me-2" id="statusSpinner"></div>
+    <span id="statusText">正在获取新闻...</span>
+</div>
+
+<!-- Two-column layout -->
+<div class="row">
+    <!-- LEFT: News Feed -->
+    <div class="col-lg-6 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <span><i class="bi bi-rss me-1"></i>最新新闻 <span id="newsCount" class="badge bg-secondary">0</span></span>
+                <!-- Stock filter chips -->
+                <div id="stockFilters" class="d-flex gap-1 flex-wrap" style="max-width:60%"></div>
+            </div>
+            <div class="card-body scroll-col p-2" id="newsFeedContainer">
+                <!-- Skeleton loaders -->
+                <div id="newsSkeletons"></div>
+                <!-- Actual news feed -->
+                <div id="newsFeed" class="d-none"></div>
+                <!-- Empty state -->
+                <div id="newsEmpty" class="text-center py-5 text-muted d-none">
+                    <i class="bi bi-newspaper fs-1"></i>
+                    <p class="mt-2">暂无新闻数据。</p>
+                    <p class="small">请确认已配置 <code>FINNHUB_API_KEY</code>，并且股票池中有股票</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- RIGHT: AI Analysis Results -->
+    <div class="col-lg-6 mb-4">
+        <div class="card">
+            <div class="card-header py-2">
+                <div class="d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-robot me-1"></i>AI 新闻分析 <span id="analysisCount" class="badge bg-secondary">0</span></span>
+                    <small class="text-muted" id="analysisHint">分析结果会注入 AI 对话/交易/仪表盘</small>
+                </div>
+                <!-- Analysis stock filter chips -->
+                <div id="analysisFilters" class="d-flex gap-1 flex-wrap mt-1"></div>
+            </div>
+            <div class="card-body scroll-col p-2" id="analysisContainer">
+                <!-- Empty state -->
+                <div id="analysisEmpty" class="text-center py-5 text-muted">
+                    <i class="bi bi-lightbulb fs-1"></i>
+                    <p class="mt-2">点击「分析新闻」按钮，AI 将结合投资原则综合分析所有新闻</p>
+                </div>
+                <!-- Analysis cards -->
+                <div id="analysisList" class="d-none"></div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- Stock Picker Modal -->
+<div class="modal fade" id="stockPickerModal" tabindex="-1" aria-labelledby="stockPickerLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-sm">
+        <div class="modal-content">
+            <div class="modal-header py-2">
+                <h6 class="modal-title" id="stockPickerLabel"><i class="bi bi-check2-square me-1"></i>选择要分析的股票</h6>
+                <button type="button" class="btn-close btn-close-sm" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body py-2">
+                <div class="d-flex justify-content-between mb-2">
+                    <button class="btn btn-outline-secondary btn-sm" onclick="toggleAllStocks(true)">全选</button>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="toggleAllStocks(false)">全不选</button>
+                </div>
+                <div id="stockPickerList"></div>
+            </div>
+            <div class="modal-footer py-2">
+                <span class="me-auto small text-muted" id="stockPickerCount">已选 0 只</span>
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary btn-sm" id="confirmAnalyzeBtn" onclick="confirmAnalyze()">
+                    <i class="bi bi-robot me-1"></i>开始分析
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<!-- marked.js for Markdown rendering -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+// Configure marked (same as agent_chat.html)
+marked.setOptions({ gfm: true, breaks: true });
+
+// ── State ──────────────────────────────────────────
+let cachedNewsBySymbol = {};
+let cachedStockNames = {};  // { symbol: name }
+let cachedAnalyses = [];
+let activeFilter = null;  // null = show all (news)
+let activeAnalysisFilter = null;  // null = show all (analysis)
+
+// Helper: display name for a symbol (name or symbol fallback)
+function stockLabel(symbol) {
+    return cachedStockNames[symbol] || symbol;
+}
+
+// ── Init ───────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+    loadExistingAnalyses();
+    refreshNews();
+});
+
+// ── Fetch News ─────────────────────────────────────
+async function refreshNews() {
+    showStatus('正在获取新闻...', true);
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true;
+    document.getElementById('analyzeBtn').disabled = true;
+    showSkeletons();
+
+    try {
+        const res = await fetch('/api/media/news');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+
+        cachedNewsBySymbol = data.news || {};
+        cachedStockNames = data.stock_names || {};
+        const total = data.total || 0;
+
+        renderStockFilters(cachedNewsBySymbol);
+        renderNewsFeed(cachedNewsBySymbol);
+        document.getElementById('newsCount').textContent = total;
+
+        if (total > 0) {
+            document.getElementById('analyzeBtn').disabled = false;
+            showStatus(`已获取 ${total} 条新闻（${data.stocks_searched} 只股票）`, false);
+        } else {
+            showStatus('未获取到新闻，请检查 API 配置或稍后重试', false);
+        }
+    } catch (e) {
+        console.error('refreshNews error:', e);
+        showStatus('获取新闻失败: ' + e.message, false);
+        showNewsEmpty();
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// ── Stock Filter Chips ─────────────────────────────
+function renderStockFilters(newsBySymbol) {
+    const container = document.getElementById('stockFilters');
+    const symbols = Object.keys(newsBySymbol).filter(s => newsBySymbol[s].length > 0);
+
+    if (symbols.length <= 1) {
+        container.innerHTML = '';
+        return;
+    }
+
+    let html = `<span class="badge stock-filter-badge bg-light text-dark ${!activeFilter ? 'active' : ''}"
+                      onclick="setFilter(null)">全部</span>`;
+    symbols.forEach(s => {
+        html += `<span class="badge stock-filter-badge bg-light text-dark ${activeFilter === s ? 'active' : ''}"
+                       onclick="setFilter('${s}')">${escHtml(stockLabel(s))}</span>`;
+    });
+    container.innerHTML = html;
+}
+
+function setFilter(symbol) {
+    activeFilter = symbol;
+    renderStockFilters(cachedNewsBySymbol);
+    renderNewsFeed(cachedNewsBySymbol);
+}
+
+// ── Render News Feed ───────────────────────────────
+function renderNewsFeed(newsBySymbol) {
+    const feed = document.getElementById('newsFeed');
+    const skeletons = document.getElementById('newsSkeletons');
+    const empty = document.getElementById('newsEmpty');
+
+    skeletons.classList.add('d-none');
+
+    // Flatten and optionally filter
+    const allItems = [];
+    for (const [symbol, items] of Object.entries(newsBySymbol)) {
+        if (activeFilter && symbol !== activeFilter) continue;
+        items.forEach(item => allItems.push({...item, stock_symbol: symbol}));
+    }
+
+    if (allItems.length === 0) {
+        empty.classList.remove('d-none');
+        feed.classList.add('d-none');
+        return;
+    }
+
+    empty.classList.add('d-none');
+    feed.classList.remove('d-none');
+
+    feed.innerHTML = allItems.map(item => `
+        <div class="news-card card mb-2 p-2">
+            <div class="d-flex align-items-start gap-2">
+                <span class="stock-symbol-badge mt-1">${escHtml(stockLabel(item.stock_symbol))}</span>
+                <div class="flex-grow-1" style="min-width:0">
+                    <a href="${escHtml(item.url)}" target="_blank" rel="noopener"
+                       class="text-decoration-none fw-semibold small d-block text-truncate"
+                       title="${escHtml(item.title)}">
+                        ${escHtml(item.title)}
+                    </a>
+                    <div class="text-muted" style="font-size:0.75rem">
+                        ${escHtml(item.source || '')} ${item.published_date ? '| ' + escHtml(item.published_date) : ''}
+                    </div>
+                    <div class="small text-muted mt-1">${escHtml(item.snippet || '')}</div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+// ── Analyze News (with stock picker) ──────────────
+function analyzeNews() {
+    const symbols = Object.keys(cachedNewsBySymbol).filter(s => cachedNewsBySymbol[s].length > 0);
+    if (symbols.length === 0) {
+        alert('暂无新闻数据可供分析');
+        return;
+    }
+
+    // Build checkbox list
+    const listEl = document.getElementById('stockPickerList');
+    listEl.innerHTML = symbols.map(s => {
+        const count = cachedNewsBySymbol[s].length;
+        const name = stockLabel(s);
+        return `
+        <div class="form-check mb-1">
+            <input class="form-check-input stock-pick-cb" type="checkbox" value="${escHtml(s)}"
+                   id="pick_${escHtml(s)}" checked onchange="updatePickerCount()">
+            <label class="form-check-label small" for="pick_${escHtml(s)}">
+                <span class="fw-semibold">${escHtml(name)}</span>
+                <span class="text-muted">(${count} 条新闻)</span>
+            </label>
+        </div>`;
+    }).join('');
+    updatePickerCount();
+
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('stockPickerModal'));
+    modal.show();
+}
+
+function toggleAllStocks(checked) {
+    document.querySelectorAll('.stock-pick-cb').forEach(cb => cb.checked = checked);
+    updatePickerCount();
+}
+
+function updatePickerCount() {
+    const checked = document.querySelectorAll('.stock-pick-cb:checked').length;
+    document.getElementById('stockPickerCount').textContent = `已选 ${checked} 只`;
+    document.getElementById('confirmAnalyzeBtn').disabled = checked === 0;
+}
+
+async function confirmAnalyze() {
+    const selected = Array.from(document.querySelectorAll('.stock-pick-cb:checked')).map(cb => cb.value);
+    if (selected.length === 0) return;
+
+    // Close modal
+    bootstrap.Modal.getInstance(document.getElementById('stockPickerModal')).hide();
+
+    // Build subset — only include stocks that actually have news
+    const subset = {};
+    selected.forEach(s => {
+        if (cachedNewsBySymbol[s] && cachedNewsBySymbol[s].length > 0)
+            subset[s] = cachedNewsBySymbol[s];
+    });
+
+    if (Object.keys(subset).length === 0) {
+        showStatus('所选股票暂无新闻数据，无需分析', false);
+        return;
+    }
+
+    const btn = document.getElementById('analyzeBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>AI 分析中...';
+    showStatus(`AI 正在分析 ${Object.keys(subset).length} 只股票的新闻（结合投资原则），请稍候...`, true);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 150000); // 150s timeout
+
+    try {
+        const res = await fetch('/api/media/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ news_by_symbol: subset }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || '分析失败');
+
+        // Reload all analyses (includes previously existing ones for non-selected stocks)
+        await loadExistingAnalyses();
+        const msg = data.message || `分析完成！本次分析 ${data.total_analyzed} 只股票的新闻`;
+        showStatus(msg, false);
+    } catch (e) {
+        clearTimeout(timeoutId);
+        console.error('analyzeNews error:', e);
+        const msg = e.name === 'AbortError' ? 'AI 分析超时，请稍后重试' : e.message;
+        showStatus('分析失败: ' + msg, false);
+        alert('AI 分析失败: ' + msg);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-robot me-1"></i>分析新闻';
+    }
+}
+
+// ── Load Existing Analyses ─────────────────────────
+async function loadExistingAnalyses() {
+    try {
+        const res = await fetch('/api/media/analyses');
+        const data = await res.json();
+        if (data.success) {
+            renderAnalyses(data.analyses || []);
+        }
+    } catch (e) {
+        console.error('loadExistingAnalyses error:', e);
+    }
+}
+
+// ── Analysis Filter Chips ──────────────────────────
+function renderAnalysisFilters(analyses) {
+    const container = document.getElementById('analysisFilters');
+    const symbols = [...new Set(analyses.map(a => a.symbol))];
+
+    if (symbols.length <= 1) {
+        container.innerHTML = '';
+        return;
+    }
+
+    let html = `<span class="badge stock-filter-badge bg-light text-dark ${!activeAnalysisFilter ? 'active' : ''}"
+                      onclick="setAnalysisFilter(null)">全部</span>`;
+    symbols.forEach(s => {
+        const a = analyses.find(x => x.symbol === s);
+        const label = (a && a.stock_name) ? a.stock_name : stockLabel(s);
+        html += `<span class="badge stock-filter-badge bg-light text-dark ${activeAnalysisFilter === s ? 'active' : ''}"
+                       onclick="setAnalysisFilter('${s}')">${escHtml(label)}</span>`;
+    });
+    container.innerHTML = html;
+}
+
+function setAnalysisFilter(symbol) {
+    activeAnalysisFilter = symbol;
+    renderAnalysisFilters(cachedAnalyses);
+    renderAnalysisCards(cachedAnalyses);
+
+    // Scroll to the first matching card
+    if (symbol) {
+        const target = document.getElementById('analysis-' + symbol);
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+}
+
+// ── Render Analysis Cards ──────────────────────────
+function renderAnalyses(analyses) {
+    cachedAnalyses = analyses || [];
+    renderAnalysisFilters(cachedAnalyses);
+    renderAnalysisCards(cachedAnalyses);
+}
+
+function renderAnalysisCards(analyses) {
+    const container = document.getElementById('analysisList');
+    const empty = document.getElementById('analysisEmpty');
+    const count = document.getElementById('analysisCount');
+
+    count.textContent = analyses.length;
+
+    if (!analyses || analyses.length === 0) {
+        container.classList.add('d-none');
+        empty.classList.remove('d-none');
+        document.getElementById('analysisFilters').innerHTML = '';
+        return;
+    }
+
+    // Filter by active selection
+    const filtered = activeAnalysisFilter
+        ? analyses.filter(a => a.symbol === activeAnalysisFilter)
+        : analyses;
+
+    empty.classList.add('d-none');
+    container.classList.remove('d-none');
+
+    const sentimentMap = { bullish: '看涨', bearish: '看跌', neutral: '中性' };
+
+    container.innerHTML = filtered.map(a => {
+        const sentimentClass = `sentiment-${a.sentiment || 'neutral'}`;
+        const sentimentLabel = sentimentMap[a.sentiment] || a.sentiment || '未知';
+
+        const eventsHtml = (a.key_events || []).map(e =>
+            `<li class="small">${escHtml(e)}</li>`
+        ).join('');
+
+        const impactsHtml = (a.principle_impacts || []).map(p =>
+            `<li class="small">${escHtml(p)}</li>`
+        ).join('');
+
+        const sourcesHtml = (a.news_sources || []).slice(0, 5).map(s =>
+            `<a href="${escHtml(s.url)}" target="_blank" rel="noopener"
+                class="small text-muted d-block text-truncate"
+                title="${escHtml(s.title)}">${escHtml(s.title)}</a>`
+        ).join('');
+
+        const analyzedTime = a.analyzed_at
+            ? new Date(a.analyzed_at).toLocaleString('zh-CN')
+            : '';
+
+        return `
+        <div class="analysis-card mb-3" id="analysis-${escHtml(a.symbol)}" data-symbol="${escHtml(a.symbol)}">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="fw-bold">${escHtml(a.symbol)}</span>
+                    <span class="text-muted small ms-1">${escHtml(a.stock_name || '')}</span>
+                    <span class="sentiment-badge ${sentimentClass} ms-2">${sentimentLabel}</span>
+                </div>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteAnalysis(${a.id})"
+                        title="删除此分析（AI 上下文将不再引用）">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="mb-2">${marked.parse(a.summary || '')}</div>
+                ${eventsHtml ? `
+                <div class="mb-2">
+                    <strong class="small text-primary"><i class="bi bi-lightning me-1"></i>关键事件</strong>
+                    <ul class="mb-1">${eventsHtml}</ul>
+                </div>` : ''}
+                ${impactsHtml ? `
+                <div class="mb-2">
+                    <strong class="small text-warning"><i class="bi bi-exclamation-triangle me-1"></i>原则影响</strong>
+                    <ul class="mb-1">${impactsHtml}</ul>
+                </div>` : ''}
+                ${sourcesHtml ? `
+                <div class="border-top pt-1 mt-2">
+                    <strong class="small text-muted"><i class="bi bi-link-45deg me-1"></i>新闻来源</strong>
+                    ${sourcesHtml}
+                </div>` : ''}
+                ${analyzedTime ? `
+                <div class="text-muted small mt-2">
+                    <i class="bi bi-clock me-1"></i>分析时间: ${analyzedTime}
+                </div>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// ── Delete Analysis ────────────────────────────────
+async function deleteAnalysis(id) {
+    if (!confirm('确定删除此股票的新闻分析？\n删除后 AI 对话、交易分析和仪表盘将不再引用此分析。')) return;
+    try {
+        const res = await fetch(`/api/media/analyses/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        await loadExistingAnalyses();
+        showStatus('已删除该股票的新闻分析', false);
+    } catch (e) {
+        alert('删除失败: ' + e.message);
+    }
+}
+
+// ── Helpers ────────────────────────────────────────
+function showStatus(text, loading) {
+    document.getElementById('statusText').textContent = text;
+    document.getElementById('statusSpinner').style.display = loading ? 'inline-block' : 'none';
+    document.getElementById('statusBar').style.display = 'flex';
+}
+
+function showSkeletons() {
+    const container = document.getElementById('newsSkeletons');
+    container.classList.remove('d-none');
+    document.getElementById('newsFeed').classList.add('d-none');
+    document.getElementById('newsEmpty').classList.add('d-none');
+    container.innerHTML = Array(6).fill(0).map(() => `
+        <div class="card mb-2 p-2">
+            <div class="d-flex gap-2">
+                <div class="skeleton" style="width:50px;height:20px"></div>
+                <div class="flex-grow-1">
+                    <div class="skeleton" style="width:80%;height:16px"></div>
+                    <div class="skeleton" style="width:40%;height:12px;margin-top:4px"></div>
+                    <div class="skeleton" style="width:100%;height:12px;margin-top:4px"></div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function showNewsEmpty() {
+    document.getElementById('newsSkeletons').classList.add('d-none');
+    document.getElementById('newsFeed').classList.add('d-none');
+    document.getElementById('newsEmpty').classList.remove('d-none');
+}
+
+function escHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+</script>
+{% endblock %}

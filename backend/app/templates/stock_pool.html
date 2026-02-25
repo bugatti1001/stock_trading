@@ -1,0 +1,1170 @@
+{% extends "base.html" %}
+
+{% block title %}股票池 - 股票分析系统{% endblock %}
+
+{% block extra_css %}
+<style>
+/* 总览行 hover 提示可展开 */
+.summary-row { cursor: pointer; transition: background .15s; }
+.summary-row:hover { background: rgba(var(--bs-primary-rgb), .04); }
+/* 展开行隐藏边框 */
+.detail-row td { border-top: none; padding: 0; }
+.detail-inner { padding: 1rem 1.5rem 1.5rem; background: #f8f9fa; }
+/* 门槛徽章 */
+.th-badge { font-size: .72rem; padding: 2px 7px; border-radius: 3px; font-weight: 600; }
+.th-pass { background: #d1e7dd; color: #0f5132; }
+.th-fail { background: #f8d7da; color: #842029; }
+.th-na   { background: #e9ecef; color: #6c757d; }
+/* Tab 内表格紧凑 */
+.detail-inner .table { margin-bottom: 0; font-size: .85rem; }
+.detail-inner .table th { font-weight: 600; background: #fff; }
+/* 指标卡片 */
+.metric-card { border: 1px solid #dee2e6; border-radius: 6px; padding: 10px 14px; text-align: center; }
+.metric-card .label { font-size: .75rem; color: #6c757d; }
+.metric-card .value { font-size: 1.1rem; font-weight: 700; }
+/* 展开箭头 */
+.expand-icon { transition: transform .2s; }
+.expand-icon.open { transform: rotate(90deg); }
+/* 可编辑指标 */
+.editable-value { cursor: pointer; border-bottom: 1px dashed #adb5bd; transition: background .15s; }
+.editable-value:hover { background: rgba(var(--bs-primary-rgb), .08); border-radius: 3px; }
+.editable-value .edit-hint { font-size: .6rem; color: #adb5bd; margin-left: 2px; display: none; }
+.editable-value:hover .edit-hint { display: inline; }
+.edit-input { width: 80px; text-align: center; font-size: .9rem; font-weight: 700; padding: 2px 6px; border: 1px solid var(--bs-primary); border-radius: 4px; }
+.edit-saving { opacity: .5; pointer-events: none; }
+/* 字段来源标注 */
+.editable-value small.text-muted, .metric-card small.text-muted { font-size: .65rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <h1><i class="bi bi-collection"></i> 股票池管理</h1>
+    </div>
+    <div class="col-md-4 text-end">
+        <a href="/api/stocks/export" class="btn btn-outline-success">
+            <i class="bi bi-download"></i> 导出 CSV
+        </a>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addStockModal">
+            <i class="bi bi-plus-circle"></i> 添加股票
+        </button>
+    </div>
+</div>
+
+<!-- Stock Table -->
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:30px"></th>
+                        <th>代码</th>
+                        <th>名称</th>
+                        <th>行业</th>
+                        <th>价格</th>
+                        <th>市值</th>
+                        <th>P/E</th>
+                        <th>净利率</th>
+                        <th>毛利率</th>
+                        <th class="text-center">门槛</th>
+                        <th>来源</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stock in stocks %}
+                    <!-- 总览行 -->
+                    <tr class="summary-row" onclick="toggleDetail('detail-{{ stock.id }}', this)">
+                        <td class="text-center">
+                            <i class="bi bi-chevron-right expand-icon" id="icon-detail-{{ stock.id }}"></i>
+                        </td>
+                        <td>
+                            <a href="{{ url_for('web.stock_detail', symbol=stock.symbol) }}" class="text-decoration-none fw-bold" onclick="event.stopPropagation()">
+                                {{ stock.symbol }}
+                            </a>
+                        </td>
+                        <td>{{ stock.name or '—' }}</td>
+                        <td>
+                            {% if stock.sector %}
+                                <span class="badge bg-secondary">{{ stock.sector }}</span>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {% if stock.current_price %}
+                                <strong class="text-success">{{ stock._currency_sign }}{{ "%.2f"|format(stock.current_price) }}</strong>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {% if stock.market_cap %}
+                                {{ stock._currency_sign }}{{ "%.1f"|format(stock.market_cap) }}B
+                            {% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {% if stock.pe_ratio %}{{ "%.1f"|format(stock.pe_ratio) }}{% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {% if stock._net_margin_display is not none %}
+                                <span class="badge {% if stock._net_margin_display >= 20 %}bg-success{% elif stock._net_margin_display >= 10 %}bg-warning{% else %}bg-danger{% endif %}">
+                                    {{ "%.1f"|format(stock._net_margin_display) }}%
+                                </span>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {% if stock._gross_margin_display is not none %}
+                                <span class="{% if stock._gross_margin_display >= 50 %}text-success{% elif stock._gross_margin_display >= 30 %}text-warning{% else %}text-danger{% endif %}">
+                                    {{ "%.1f"|format(stock._gross_margin_display) }}%
+                                </span>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td class="text-center" onclick="event.stopPropagation()">
+                            {% set t = stock._thresholds %}
+                            <span class="th-badge {% if t.market_cap_ok %}th-pass{% elif t.market_cap_ok is none %}th-na{% else %}th-fail{% endif %}" title="市值>100亿">市值</span>
+                            <span class="th-badge {% if t.pe_ok %}th-pass{% elif t.pe_ok is none %}th-na{% else %}th-fail{% endif %}" title="PE<30">PE</span>
+                            <span class="th-badge {% if t.profitable_3y %}th-pass{% elif t.profitable_3y is none %}th-na{% else %}th-fail{% endif %}" title="连续3年盈利">3Y盈利</span>
+                        </td>
+                        <td>
+                            {% if stock._all_source_labels %}
+                                {% for src in stock._all_source_labels %}
+                                {% if src in ('SEC解析', '手动上传') %}
+                                <span class="badge bg-info text-white" style="font-size:.7rem;">{{ src }}</span>
+                                {% elif src == '雪球' %}
+                                <span class="badge bg-warning text-dark" style="font-size:.7rem;">{{ src }}</span>
+                                {% else %}
+                                <span class="badge bg-light text-dark" style="font-size:.7rem;">{{ src }}</span>
+                                {% endif %}
+                                {% endfor %}
+                            {% elif stock._data_source_label %}
+                                <span class="badge bg-light text-dark" style="font-size:.7rem;">{{ stock._data_source_label }}</span>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td onclick="event.stopPropagation()">
+                            <div class="btn-group btn-group-sm">
+                                <a href="{{ url_for('web.stock_detail', symbol=stock.symbol) }}"
+                                   class="btn btn-outline-primary" title="查看详情">
+                                    <i class="bi bi-eye"></i>
+                                </a>
+                                <button class="btn btn-outline-success"
+                                        onclick="refreshStock('{{ stock.symbol }}')" title="刷新数据">
+                                    <i class="bi bi-arrow-repeat"></i>
+                                </button>
+                                <button class="btn btn-outline-danger"
+                                        onclick="removeStock('{{ stock.symbol }}')" title="移除">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    <!-- 可展开详情行 -->
+                    <tr class="detail-row" id="detail-{{ stock.id }}" style="display:none;">
+                        <td colspan="12">
+                            <div class="detail-inner">
+                                <!-- 6 Tab 页 -->
+                                <ul class="nav nav-tabs nav-tabs-sm" id="tabs-{{ stock.id }}" role="tablist">
+                                    <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-threshold-{{ stock.id }}">基本门槛</a></li>
+                                    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-earnings-{{ stock.id }}">盈利质量</a></li>
+                                    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-health-{{ stock.id }}">财务健康</a></li>
+                                    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-segments-{{ stock.id }}">分业务拆解</a></li>
+                                    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-moat-{{ stock.id }}">护城河</a></li>
+                                    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-capital-{{ stock.id }}">资本配置</a></li>
+                                </ul>
+                                <div class="tab-content pt-3">
+                                    <!-- Tab 1: 基本门槛 -->
+                                    <div class="tab-pane fade show active" id="tab-threshold-{{ stock.id }}">
+                                        {% set t = stock._thresholds %}
+                                        <div class="row g-3">
+                                            <div class="col-md-3">
+                                                <div class="metric-card">
+                                                    <div class="label">市值 > 100亿</div>
+                                                    <div class="value">
+                                                        {% if stock.market_cap %}
+                                                            {{ stock._currency_sign }}{{ "%.1f"|format(stock.market_cap) }}B
+                                                            {% if t.market_cap_ok %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle-fill text-danger"></i>{% endif %}
+                                                        {% else %}—{% endif %}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <div class="metric-card">
+                                                    <div class="label">上市 > 5 年</div>
+                                                    <div class="value">
+                                                        {% if t.listed_years is not none %}
+                                                            {{ t.listed_years }} 年
+                                                            {% if t.listed_ok %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle-fill text-danger"></i>{% endif %}
+                                                        {% else %}—{% endif %}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <div class="metric-card">
+                                                    <div class="label">PE < 30</div>
+                                                    <div class="value">
+                                                        {% if stock.pe_ratio %}
+                                                            {{ "%.1f"|format(stock.pe_ratio) }}
+                                                            {% if t.pe_ok %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle-fill text-danger"></i>{% endif %}
+                                                        {% else %}—{% endif %}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <div class="metric-card">
+                                                    <div class="label">连续 3 年盈利</div>
+                                                    <div class="value">
+                                                        {% if t.profitable_3y is not none %}
+                                                            {% if t.profitable_3y %}<i class="bi bi-check-circle-fill text-success"></i> 是{% else %}<i class="bi bi-x-circle-fill text-danger"></i> 否{% endif %}
+                                                        {% else %}— (数据不足){% endif %}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Tab 2: 盈利质量 -->
+                                    <div class="tab-pane fade" id="tab-earnings-{{ stock.id }}">
+                                        {% set eq = stock._earnings_quality %}
+                                        {% if eq.years %}
+                                        {% set mk = eq.multi_period_kpis %}
+                                        <div class="row mb-3 g-3">
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">3年现金流/利润</div>
+                                                    <div class="value {% if mk.cashflow_profit_ratio_3y is defined and mk.cashflow_profit_ratio_3y is not none and mk.cashflow_profit_ratio_3y >= 0.8 %}text-success{% elif mk.cashflow_profit_ratio_3y is defined and mk.cashflow_profit_ratio_3y is not none %}text-warning{% endif %}">
+                                                        {{ "%.2f"|format(mk.cashflow_profit_ratio_3y) if mk.cashflow_profit_ratio_3y is defined and mk.cashflow_profit_ratio_3y is not none else '—' }}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">3年平均OCF ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value">{{ stock._currency_sign ~ "%.2f"|format(mk.avg_ocf_3y / 1e9) if mk.avg_ocf_3y is defined and mk.avg_ocf_3y is not none else '—' }}</div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">3年平均FCF ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value">{{ stock._currency_sign ~ "%.2f"|format(mk.avg_fcf_3y / 1e9) if mk.avg_fcf_3y is defined and mk.avg_fcf_3y is not none else '—' }}</div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">3年平均Capex ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value">{{ stock._currency_sign ~ "%.2f"|format(mk.avg_capex_3y / 1e9) if mk.avg_capex_3y is defined and mk.avg_capex_3y is not none else '—' }}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <table class="table table-sm table-bordered">
+                                            <thead>
+                                                <tr>
+                                                    <th>年度</th>
+                                                    <th>经营现金流 ({{ stock._currency_sign }}B)</th>
+                                                    <th>资本支出 ({{ stock._currency_sign }}B)</th>
+                                                    <th>净利润 ({{ stock._currency_sign }}B)</th>
+                                                    <th>归母利润 ({{ stock._currency_sign }}B)</th>
+                                                    <th>扣非净利 ({{ stock._currency_sign }}B)</th>
+                                                    <th>毛利率</th>
+                                                    <th>营业利润率</th>
+                                                    <th>净利率</th>
+                                                    <th>来源</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for yr in eq.years %}
+                                                {% set fs = yr.field_sources or {} %}
+                                                <tr>
+                                                    <td class="fw-bold">{{ yr.year }}</td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="operating_cash_flow" data-raw="{{ yr.ocf if yr.ocf is not none else '' }}" data-suffix="" data-multiplier="1e9" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if yr.ocf is not none %}{{ stock._currency_sign }}{{ yr.ocf }}{% if fs.operating_cash_flow %}<small class="text-muted ms-1">({{ fs.operating_cash_flow }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="capital_expenditure" data-raw="{{ yr.capex if yr.capex is not none else '' }}" data-suffix="" data-multiplier="1e9" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if yr.capex is not none %}{{ stock._currency_sign }}{{ yr.capex }}{% if fs.capital_expenditure %}<small class="text-muted ms-1">({{ fs.capital_expenditure }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="net_income" data-raw="{{ yr.net_income if yr.net_income is not none else '' }}" data-suffix="" data-multiplier="1e9" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if yr.net_income is not none %}{{ stock._currency_sign }}{{ yr.net_income }}{% if fs.net_income %}<small class="text-muted ms-1">({{ fs.net_income }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="net_income_to_parent" data-raw="{{ yr.net_income_to_parent if yr.net_income_to_parent is not none else '' }}" data-suffix="" data-multiplier="1e9" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if yr.net_income_to_parent is not none %}{{ stock._currency_sign }}{{ yr.net_income_to_parent }}{% if fs.net_income_to_parent %}<small class="text-muted ms-1">({{ fs.net_income_to_parent }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="adjusted_net_income" data-raw="{{ yr.adj_ni if yr.adj_ni is not none else '' }}" data-suffix="" data-multiplier="1e9" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if yr.adj_ni is not none %}{{ stock._currency_sign }}{{ yr.adj_ni }}{% if fs.adjusted_net_income %}<small class="text-muted ms-1">({{ fs.adjusted_net_income }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td>{{ "%.1f"|format(yr.gross_margin) ~ '%' if yr.gross_margin is not none else '—' }}</td>
+                                                    <td>{{ "%.1f"|format(yr.operating_margin) ~ '%' if yr.operating_margin is not none else '—' }}</td>
+                                                    <td>{{ "%.1f"|format(yr.net_margin) ~ '%' if yr.net_margin is not none else '—' }}</td>
+                                                    <td><small class="text-muted">{{ yr.data_source or '' }}</small></td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                        {% else %}
+                                        <p class="text-muted">暂无盈利质量数据，请上传财报进行 AI 解析</p>
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Tab 3: 财务健康 -->
+                                    <div class="tab-pane fade" id="tab-health-{{ stock.id }}">
+                                        {% set fh = stock._fin_health %}
+                                        {% set fhfs = fh.field_sources or {} %}
+                                        {% if fh.data_source %}<div class="mb-2"><small class="text-muted">数据来源: {{ fh.data_source }}</small></div>{% endif %}
+                                        <div class="row g-3">
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">净现金 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value {% if fh.net_cash is not none and fh.net_cash > 0 %}text-success{% elif fh.net_cash is not none %}text-danger{% endif %}">
+                                                        {{ stock._currency_sign ~ "%.2f"|format(fh.net_cash / 1e9) if fh.net_cash is not none else '—' }}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">货币资金 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value text-primary editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="cash_and_equivalents"
+                                                         data-raw="{{ fh.cash if fh.cash is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.cash is not none %}{{ stock._currency_sign }}{{ fh.cash }}{% if fhfs.cash_and_equivalents %}<small class="text-muted ms-1">({{ fhfs.cash_and_equivalents }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">投资 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="investments"
+                                                         data-raw="{{ fh.investments if fh.investments is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.investments is not none %}{{ stock._currency_sign }}{{ fh.investments }}{% if fhfs.investments %}<small class="text-muted ms-1">({{ fhfs.investments }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">短期借款 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="short_term_borrowings"
+                                                         data-raw="{{ fh.stb if fh.stb is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.stb is not none %}{{ stock._currency_sign }}{{ fh.stb }}{% if fhfs.short_term_borrowings %}<small class="text-muted ms-1">({{ fhfs.short_term_borrowings }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">长期借款 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="long_term_borrowings"
+                                                         data-raw="{{ fh.ltb if fh.ltb is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.ltb is not none %}{{ stock._currency_sign }}{{ fh.ltb }}{% if fhfs.long_term_borrowings %}<small class="text-muted ms-1">({{ fhfs.long_term_borrowings }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="row g-3 mt-1">
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">总资产 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="total_assets"
+                                                         data-raw="{{ fh.total_assets if fh.total_assets is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.total_assets is not none %}{{ stock._currency_sign }}{{ fh.total_assets }}{% if fhfs.total_assets %}<small class="text-muted ms-1">({{ fhfs.total_assets }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">净资产 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="total_equity"
+                                                         data-raw="{{ fh.total_equity if fh.total_equity is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.total_equity is not none %}{{ stock._currency_sign }}{{ fh.total_equity }}{% if fhfs.total_equity %}<small class="text-muted ms-1">({{ fhfs.total_equity }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">流动负债 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="current_liabilities"
+                                                         data-raw="{{ fh.current_liabilities if fh.current_liabilities is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.current_liabilities is not none %}{{ stock._currency_sign }}{{ fh.current_liabilities }}{% if fhfs.current_liabilities %}<small class="text-muted ms-1">({{ fhfs.current_liabilities }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">应收 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="accounts_receivable"
+                                                         data-raw="{{ fh.accounts_receivable if fh.accounts_receivable is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.accounts_receivable is not none %}{{ stock._currency_sign }}{{ fh.accounts_receivable }}{% if fhfs.accounts_receivable %}<small class="text-muted ms-1">({{ fhfs.accounts_receivable }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">应付 ({{ stock._currency_sign }}B)</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ fh.fd_id or '' }}"
+                                                         data-field="accounts_payable"
+                                                         data-raw="{{ fh.accounts_payable if fh.accounts_payable is not none else '' }}"
+                                                         data-suffix="" data-multiplier="1e9"
+                                                         data-currency="{{ stock._currency_sign }}"
+                                                         onclick="startEdit(this)">
+                                                        {% if fh.accounts_payable is not none %}{{ stock._currency_sign }}{{ fh.accounts_payable }}{% if fhfs.accounts_payable %}<small class="text-muted ms-1">({{ fhfs.accounts_payable }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Tab 4: 分业务拆解 -->
+                                    <div class="tab-pane fade" id="tab-segments-{{ stock.id }}">
+                                        {% set seg_data = stock._segments %}
+                                        {% set segs = seg_data.segments if seg_data.segments is defined else seg_data %}
+                                        {% if segs and segs|length > 0 %}
+                                        {% if seg_data.data_source %}<div class="mb-2"><small class="text-muted">数据来源: {{ seg_data.data_source }}</small></div>{% endif %}
+                                        <table class="table table-sm table-bordered">
+                                            <thead>
+                                                <tr>
+                                                    <th>业务板块</th>
+                                                    <th>收入 ({{ stock._currency_sign }})</th>
+                                                    <th>营业利润 ({{ stock._currency_sign }})</th>
+                                                    <th>利润率</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for seg in segs %}
+                                                <tr>
+                                                    <td class="fw-bold editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ stock._latest_fd_id or '' }}" data-field="extended_metrics.business_segments.{{ loop.index0 }}.name" data-raw="{{ seg.name or '' }}" data-suffix="" data-type="text" onclick="startEdit(this)">{{ seg.name or '—' }}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ stock._latest_fd_id or '' }}" data-field="extended_metrics.business_segments.{{ loop.index0 }}.revenue" data-raw="{{ seg.revenue if seg.revenue is not none else '' }}" data-suffix="" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if seg.revenue is not none %}{{ stock._currency_sign }}{{ seg.revenue }}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ stock._latest_fd_id or '' }}" data-field="extended_metrics.business_segments.{{ loop.index0 }}.operating_income" data-raw="{{ seg.operating_income if seg.operating_income is not none else '' }}" data-suffix="" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if seg.operating_income is not none %}{{ stock._currency_sign }}{{ seg.operating_income }}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ stock._latest_fd_id or '' }}" data-field="extended_metrics.business_segments.{{ loop.index0 }}.margin_pct" data-raw="{{ seg.margin_pct if seg.margin_pct is not none else '' }}" data-suffix="%" onclick="startEdit(this)">{% if seg.margin_pct is not none %}{{ "%.1f"|format(seg.margin_pct) }}%{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                        {% else %}
+                                        <p class="text-muted">暂无分业务数据，请上传财报进行 AI 解析</p>
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Tab 5: 护城河 -->
+                                    <div class="tab-pane fade" id="tab-moat-{{ stock.id }}">
+                                        {% set m = stock._moat %}
+                                        {% if m.data_source %}<div class="mb-2"><small class="text-muted">数据来源: {{ m.data_source }}</small></div>{% endif %}
+                                        <div class="row g-3 mb-3">
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">市场份额</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ stock._latest_fd_id or '' }}"
+                                                         data-field="extended_metrics.moat_indicators.market_share_pct"
+                                                         data-raw="{{ m.market_share if m.market_share is not none else '' }}"
+                                                         data-suffix="%"
+                                                         onclick="startEdit(this)">
+                                                        {{ "%.1f"|format(m.market_share) ~ '%' if m.market_share is not none else '—' }}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">用户留存率</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ stock._latest_fd_id or '' }}"
+                                                         data-field="extended_metrics.moat_indicators.user_retention_rate"
+                                                         data-raw="{{ m.retention_rate if m.retention_rate is not none else '' }}"
+                                                         data-suffix="%"
+                                                         onclick="startEdit(this)">
+                                                        {{ "%.1f"|format(m.retention_rate) ~ '%' if m.retention_rate is not none else '—' }}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <div class="metric-card">
+                                                    <div class="label">复购率</div>
+                                                    <div class="value editable-value"
+                                                         data-symbol="{{ stock.symbol }}"
+                                                         data-fd-id="{{ stock._latest_fd_id or '' }}"
+                                                         data-field="extended_metrics.moat_indicators.repeat_purchase_rate"
+                                                         data-raw="{{ m.repeat_purchase if m.repeat_purchase is not none else '' }}"
+                                                         data-suffix="%"
+                                                         onclick="startEdit(this)">
+                                                        {{ "%.1f"|format(m.repeat_purchase) ~ '%' if m.repeat_purchase is not none else '—' }}<i class="bi bi-pencil edit-hint"></i>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {% if m.gross_margins %}
+                                        <h6>3 年毛利率趋势</h6>
+                                        <table class="table table-sm table-bordered" style="width: auto;">
+                                            <thead><tr><th>年度</th><th>毛利率</th><th>来源</th></tr></thead>
+                                            <tbody>
+                                                {% for gm in m.gross_margins %}
+                                                <tr>
+                                                    <td>{{ gm.year }}</td>
+                                                    <td class="{% if gm.gm is not none and gm.gm >= 50 %}text-success{% elif gm.gm is not none and gm.gm >= 30 %}text-warning{% elif gm.gm is not none %}text-danger{% endif %}">
+                                                        {{ "%.1f"|format(gm.gm) ~ '%' if gm.gm is not none else '—' }}
+                                                    </td>
+                                                    <td><small class="text-muted">{{ gm.data_source or '' }}</small></td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Tab 6: 资本配置 -->
+                                    <div class="tab-pane fade" id="tab-capital-{{ stock.id }}">
+                                        {% set ca = stock._capital_alloc %}
+                                        {% if ca.years %}
+                                        <table class="table table-sm table-bordered">
+                                            <thead>
+                                                <tr>
+                                                    <th>年度</th>
+                                                    <th>每股分红 ({{ stock._currency_sign }})</th>
+                                                    <th>总股本 (亿)</th>
+                                                    <th>并购 ({{ stock._currency_sign }}B)</th>
+                                                    <th>新业务投入 ({{ stock._currency_sign }}B)</th>
+                                                    <th>来源</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for yr in ca.years %}
+                                                {% set cafs = yr.field_sources or {} %}
+                                                <tr>
+                                                    <td class="fw-bold">{{ yr.year }}</td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="dividends_per_share" data-raw="{{ yr.dividends_per_share if yr.dividends_per_share is not none else '' }}" data-suffix="" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if yr.dividends_per_share is not none %}{{ stock._currency_sign }}{{ yr.dividends_per_share }}{% if cafs.dividends_per_share %}<small class="text-muted ms-1">({{ cafs.dividends_per_share }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="shares_outstanding" data-raw="{{ yr.shares_raw if yr.shares_raw is not none else '' }}" data-suffix="" onclick="startEdit(this)">{% if yr.shares is not none %}{{ yr.shares }}{% if cafs.shares_outstanding %}<small class="text-muted ms-1">({{ cafs.shares_outstanding }})</small>{% endif %}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="extended_metrics.capital_allocation.ma_investments" data-raw="{{ yr.ma_raw if yr.ma_raw is not none else '' }}" data-suffix="" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if yr.ma is not none %}{{ stock._currency_sign }}{{ yr.ma }}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td class="editable-value" data-symbol="{{ stock.symbol }}" data-fd-id="{{ yr.fd_id }}" data-field="extended_metrics.capital_allocation.new_business_investment" data-raw="{{ yr.new_biz_raw if yr.new_biz_raw is not none else '' }}" data-suffix="" data-currency="{{ stock._currency_sign }}" onclick="startEdit(this)">{% if yr.new_biz is not none %}{{ stock._currency_sign }}{{ yr.new_biz }}{% else %}—{% endif %}<i class="bi bi-pencil edit-hint"></i></td>
+                                                    <td><small class="text-muted">{{ yr.data_source or '' }}</small></td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                        {% else %}
+                                        <p class="text-muted">暂无资本配置数据，请上传财报进行 AI 解析</p>
+                                        {% endif %}
+                                    </div>
+                                </div><!-- /tab-content -->
+                            </div><!-- /detail-inner -->
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="12" class="text-center text-muted py-5">
+                            <i class="bi bi-inbox" style="font-size: 3rem;"></i>
+                            <p class="mt-2">股票池为空，请添加股票</p>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Add Stock Modal -->
+<div class="modal fade" id="addStockModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">添加股票</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 模式切换标签 -->
+                <ul class="nav nav-tabs mb-3" id="addStockTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="tab-single" data-bs-toggle="tab"
+                                data-bs-target="#pane-single" type="button" role="tab">
+                            <i class="bi bi-plus-circle me-1"></i>单只添加
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="tab-batch" data-bs-toggle="tab"
+                                data-bs-target="#pane-batch" type="button" role="tab">
+                            <i class="bi bi-list-ul me-1"></i>批量添加
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <!-- 单只添加 -->
+                    <div class="tab-pane fade show active" id="pane-single" role="tabpanel">
+                        <form id="addStockForm">
+                            <div class="mb-3">
+                                <label for="searchInput" class="form-label">搜索股票 *</label>
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="searchInput"
+                                           placeholder="输入代码或中文名，如 AAPL、茅台、平安"
+                                           autocomplete="off">
+                                    <button class="btn btn-outline-primary" type="button" id="searchBtn" onclick="searchStock()">
+                                        <i class="bi bi-search me-1"></i>搜索
+                                    </button>
+                                </div>
+                                <div class="form-text">支持代码(AAPL)、中文名(茅台)、拼音搜索</div>
+                            </div>
+                            <!-- 搜索结果区 -->
+                            <div id="searchResults" style="display:none" class="mb-3">
+                                <div id="searchResultsList"></div>
+                            </div>
+                            <!-- 选中的股票（隐藏字段） -->
+                            <input type="hidden" id="symbol" value="">
+                            <div id="selectedStock" style="display:none" class="mb-3">
+                                <div class="alert alert-success py-2 mb-0 d-flex align-items-center justify-content-between">
+                                    <span id="selectedStockInfo"></span>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearSelection()">重选</button>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="name" class="form-label">公司名称（可选，搜索后自动填入）</label>
+                                <input type="text" class="form-control" id="name" placeholder="例如: Apple Inc. / 贵州茅台">
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="fetchData" checked>
+                                <label class="form-check-label" for="fetchData">
+                                    自动获取数据（美股: Yahoo Finance，A股/港股: 雪球）
+                                </label>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- 批量添加 -->
+                    <div class="tab-pane fade" id="pane-batch" role="tabpanel">
+                        <div class="mb-3">
+                            <label for="batchSymbols" class="form-label">股票列表 *</label>
+                            <textarea class="form-control" id="batchSymbols" rows="5"
+                                      placeholder="每行一个代码或中文名，可混合&#10;例如:&#10;AAPL&#10;茅台&#10;腾讯&#10;SZ000858"></textarea>
+                            <div class="form-text">
+                                支持代码和中文名混合输入。中文名会自动搜索对应代码，多个结果需手动选择
+                            </div>
+                        </div>
+                        <div class="d-flex gap-2 mb-3">
+                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="resolveBatch()">
+                                <i class="bi bi-search me-1"></i>解析预览
+                            </button>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="batchFetchData" checked>
+                            <label class="form-check-label" for="batchFetchData">
+                                自动获取数据（美股: Yahoo Finance，A股/港股: 雪球）
+                            </label>
+                        </div>
+                        <div id="batchPreview" style="display:none">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="text-muted small">将添加以下股票：</span>
+                                <span class="badge bg-primary rounded-pill" id="batchPreviewCount">0</span>
+                            </div>
+                            <div id="batchPreviewTags" style="display:flex; flex-wrap:wrap; gap:0.35rem;"></div>
+                        </div>
+                        <!-- 批量解析结果区 -->
+                        <div id="batchResolveBox" style="display:none" class="mb-3"></div>
+                        <div id="batchResultBox" style="display:none" class="mt-3"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="addStockSubmitBtn" onclick="addStock()">添加</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function toggleDetail(detailId, summaryRow) {
+    const detailRow = document.getElementById(detailId);
+    const icon = document.getElementById('icon-' + detailId);
+    if (detailRow.style.display === 'none') {
+        detailRow.style.display = '';
+        icon.classList.add('open');
+    } else {
+        detailRow.style.display = 'none';
+        icon.classList.remove('open');
+    }
+}
+
+/* ---- 判断当前激活的是单只还是批量 ---- */
+function isBatchMode() {
+    return document.getElementById('tab-batch')?.classList.contains('active');
+}
+
+/* ---- 切换 tab 时更新按钮文字 ---- */
+document.addEventListener('DOMContentLoaded', function() {
+    const tabBatch = document.getElementById('tab-batch');
+    const tabSingle = document.getElementById('tab-single');
+    const btn = document.getElementById('addStockSubmitBtn');
+    if (tabBatch) tabBatch.addEventListener('shown.bs.tab', () => { btn.textContent = '批量添加'; });
+    if (tabSingle) tabSingle.addEventListener('shown.bs.tab', () => { btn.textContent = '添加'; });
+
+    // 搜索框回车触发搜索
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); searchStock(); } });
+});
+
+/* ========== 单只添加：搜索 ========== */
+
+const MARKET_LABELS = {CN: 'A股', HK: '港股', US: '美股'};
+const MARKET_COLORS = {CN: 'danger', HK: 'warning', US: 'primary'};
+
+async function searchStock() {
+    const q = document.getElementById('searchInput').value.trim();
+    if (!q) { alert('请输入搜索关键词'); return; }
+
+    const btn = document.getElementById('searchBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    try {
+        const res = await fetch(`/api/stocks/search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        if (!data.success) { alert(`搜索失败: ${data.error}`); return; }
+
+        const results = data.data || [];
+        const box = document.getElementById('searchResults');
+        const list = document.getElementById('searchResultsList');
+
+        if (!results.length) {
+            box.style.display = 'block';
+            list.innerHTML = '<div class="text-muted small py-2">未找到匹配的股票</div>';
+            return;
+        }
+
+        if (results.length === 1) {
+            // 唯一结果：直接选中
+            selectStock(results[0]);
+            box.style.display = 'none';
+            return;
+        }
+
+        // 多个结果：显示列表供选择
+        box.style.display = 'block';
+        list.innerHTML = '<div class="text-muted small mb-2">找到多个结果，请选择：</div>' +
+            '<div class="list-group">' +
+            results.map(r => `
+                <button type="button" class="list-group-item list-group-item-action py-2 d-flex align-items-center gap-2"
+                        onclick='selectStock(${JSON.stringify(r).replace(/'/g, "&#39;")})'>
+                    <span class="badge bg-${MARKET_COLORS[r.market] || 'secondary'}" style="min-width:36px">${MARKET_LABELS[r.market] || r.market}</span>
+                    <strong>${r.symbol}</strong>
+                    <span>${r.name}</span>
+                    <span class="text-muted ms-auto">${r.current_price || ''}</span>
+                </button>
+            `).join('') +
+            '</div>';
+    } catch (e) {
+        alert(`搜索出错: ${e.message}`);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-search me-1"></i>搜索';
+    }
+}
+
+function selectStock(stock) {
+    document.getElementById('symbol').value = stock.symbol;
+    document.getElementById('name').value = stock.name || '';
+    document.getElementById('searchResults').style.display = 'none';
+
+    const info = document.getElementById('selectedStockInfo');
+    const mLabel = MARKET_LABELS[stock.market] || stock.market;
+    const mColor = MARKET_COLORS[stock.market] || 'secondary';
+    info.innerHTML = `<span class="badge bg-${mColor} me-1">${mLabel}</span> <strong>${stock.symbol}</strong> ${stock.name} <span class="text-muted ms-1">${stock.current_price || ''}</span>`;
+    document.getElementById('selectedStock').style.display = 'block';
+    document.getElementById('searchInput').value = '';
+}
+
+function clearSelection() {
+    document.getElementById('symbol').value = '';
+    document.getElementById('name').value = '';
+    document.getElementById('selectedStock').style.display = 'none';
+    document.getElementById('searchInput').value = '';
+    document.getElementById('searchInput').focus();
+}
+
+/* ---- 统一入口 ---- */
+function addStock() {
+    if (isBatchMode()) { addStocksBatch(); return; }
+
+    const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+    const name = document.getElementById('name').value.trim();
+    const fetchData = document.getElementById('fetchData').checked;
+
+    if (!symbol) { alert('请先搜索并选择一只股票'); return; }
+
+    const payload = { symbol };
+    if (name) payload.name = name;
+    payload.fetch_data = fetchData;
+
+    const btn = document.getElementById('addStockSubmitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>添加中…';
+
+    fetch('/api/stocks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) { alert(`股票 ${symbol} 添加成功！`); location.reload(); }
+        else { alert(`添加失败: ${data.error}`); }
+    })
+    .catch(e => alert(`错误: ${e}`))
+    .finally(() => { btn.disabled = false; btn.textContent = '添加'; });
+}
+
+/* ========== 批量添加：解析 & 提交 ========== */
+
+// 判断是否为合法股票代码格式
+function isValidSymbolFormat(s) {
+    return /^[A-Z]{1,10}$/.test(s) || /^(SH|SZ)\d{6}$/.test(s) || /^HK\d{5}$/.test(s);
+}
+
+function parseBatchTokens() {
+    const raw = document.getElementById('batchSymbols').value;
+    // 按换行拆分（保留中文名完整性），每行再按逗号/分号拆
+    const lines = raw.split(/\n/).flatMap(line => line.split(/[,;，；]/));
+    return lines.map(s => s.trim()).filter(Boolean);
+}
+
+// resolvedBatch: [{input, symbol, name, market, status: 'ok'|'pick'|'none', candidates:[]}]
+let resolvedBatch = [];
+
+async function resolveBatch() {
+    const tokens = parseBatchTokens();
+    if (!tokens.length) { alert('请输入至少一个股票代码或名称'); return; }
+
+    const box = document.getElementById('batchResolveBox');
+    box.style.display = 'block';
+    box.innerHTML = '<div class="text-muted small"><span class="spinner-border spinner-border-sm me-1"></span>正在解析…</div>';
+
+    // 隐藏旧预览
+    document.getElementById('batchPreview').style.display = 'none';
+
+    resolvedBatch = [];
+    for (const token of tokens) {
+        const upper = token.toUpperCase();
+        if (isValidSymbolFormat(upper)) {
+            // 已是合法代码，直接用
+            resolvedBatch.push({input: token, symbol: upper, name: '', market: '', status: 'ok'});
+        } else {
+            // 需要搜索
+            try {
+                const res = await fetch(`/api/stocks/search?q=${encodeURIComponent(token)}`);
+                const data = await res.json();
+                const results = data.data || [];
+                if (results.length === 1) {
+                    resolvedBatch.push({input: token, symbol: results[0].symbol, name: results[0].name,
+                                        market: results[0].market, status: 'ok'});
+                } else if (results.length > 1) {
+                    resolvedBatch.push({input: token, symbol: '', name: '', market: '',
+                                        status: 'pick', candidates: results});
+                } else {
+                    resolvedBatch.push({input: token, symbol: '', name: '', market: '', status: 'none'});
+                }
+            } catch (e) {
+                resolvedBatch.push({input: token, symbol: '', name: '', market: '', status: 'none'});
+            }
+        }
+    }
+
+    renderBatchResolve();
+}
+
+function renderBatchResolve() {
+    const box = document.getElementById('batchResolveBox');
+    let html = '<div class="small mb-2 fw-bold">解析结果：</div>';
+    html += '<table class="table table-sm table-bordered mb-2" style="font-size:0.85rem"><tbody>';
+
+    resolvedBatch.forEach((item, idx) => {
+        if (item.status === 'ok') {
+            const mLabel = MARKET_LABELS[item.market] || '';
+            const mColor = MARKET_COLORS[item.market] || 'secondary';
+            const badge = item.market ? `<span class="badge bg-${mColor}" style="font-size:0.7rem">${mLabel}</span> ` : '';
+            html += `<tr>
+                <td class="text-muted" style="width:30%">${item.input}</td>
+                <td><i class="bi bi-check-circle text-success me-1"></i>${badge}<strong>${item.symbol}</strong> ${item.name}</td>
+            </tr>`;
+        } else if (item.status === 'pick') {
+            html += `<tr>
+                <td class="text-muted">${item.input}</td>
+                <td>
+                    <i class="bi bi-question-circle text-warning me-1"></i>找到 ${item.candidates.length} 个结果，请选择：
+                    <select class="form-select form-select-sm mt-1" onchange="batchPick(${idx}, this.value)" style="max-width:350px">
+                        <option value="">-- 请选择 --</option>
+                        ${item.candidates.map(c => {
+                            const ml = MARKET_LABELS[c.market] || c.market;
+                            return `<option value="${c.symbol}" data-name="${c.name}" data-market="${c.market}">[${ml}] ${c.symbol} ${c.name} ${c.current_price || ''}</option>`;
+                        }).join('')}
+                    </select>
+                </td>
+            </tr>`;
+        } else {
+            html += `<tr>
+                <td class="text-muted">${item.input}</td>
+                <td><i class="bi bi-x-circle text-danger me-1"></i>未找到匹配</td>
+            </tr>`;
+        }
+    });
+
+    html += '</tbody></table>';
+
+    // 统计
+    const okCount = resolvedBatch.filter(r => r.status === 'ok').length;
+    const pickCount = resolvedBatch.filter(r => r.status === 'pick' && !r.symbol).length;
+    if (pickCount > 0) {
+        html += `<div class="text-warning small">还有 ${pickCount} 项需要选择</div>`;
+    }
+
+    // 更新预览
+    const preview = document.getElementById('batchPreview');
+    const readySymbols = resolvedBatch.filter(r => r.symbol).map(r => r.symbol);
+    if (readySymbols.length) {
+        preview.style.display = 'block';
+        document.getElementById('batchPreviewCount').textContent = readySymbols.length;
+        document.getElementById('batchPreviewTags').innerHTML = readySymbols.map(s =>
+            `<span class="badge bg-light text-dark border" style="font-size:0.8rem;">${s}</span>`
+        ).join('');
+    }
+
+    box.innerHTML = html;
+}
+
+function batchPick(idx, symbol) {
+    const item = resolvedBatch[idx];
+    if (!symbol) { item.symbol = ''; item.name = ''; item.market = ''; return renderBatchResolve(); }
+    const cand = item.candidates.find(c => c.symbol === symbol);
+    item.symbol = symbol;
+    item.name = cand ? cand.name : '';
+    item.market = cand ? cand.market : '';
+    item.status = 'ok';
+    renderBatchResolve();
+}
+
+/* ---- 批量添加提交 ---- */
+async function addStocksBatch() {
+    // 如果未解析过，自动先解析（支持中文名自动搜索转代码）
+    if (!resolvedBatch.length) {
+        const tokens = parseBatchTokens();
+        if (!tokens.length) { alert('请输入至少一个股票代码或名称'); return; }
+        // 检查是否有非代码的输入（中文名等），如有则自动解析
+        const hasNonCode = tokens.some(t => !isValidSymbolFormat(t.toUpperCase()));
+        if (hasNonCode) {
+            await resolveBatch();
+            // 解析完后检查是否有需要手动选择的
+            const unresolved = resolvedBatch.filter(r => r.status === 'pick' && !r.symbol);
+            if (unresolved.length) {
+                // 有多个结果需要选择，停下来让用户选
+                return;
+            }
+            // 解析完后如果没有需要选择的且有未找到的，提示但继续
+        } else {
+            // 全是合法代码，直接构建 resolvedBatch
+            for (const t of tokens) {
+                const upper = t.toUpperCase();
+                resolvedBatch.push({input: t, symbol: upper, name: '', market: '', status: 'ok'});
+            }
+        }
+    }
+
+    let symbols;
+    if (resolvedBatch.length) {
+        symbols = resolvedBatch.filter(r => r.symbol).map(r => r.symbol);
+        const unresolved = resolvedBatch.filter(r => r.status === 'pick' && !r.symbol);
+        if (unresolved.length) {
+            alert(`还有 ${unresolved.length} 项未选择，请先选择或删除`);
+            return;
+        }
+    } else {
+        alert('没有可添加的股票'); return;
+    }
+
+    if (!symbols.length) { alert('没有可添加的股票'); return; }
+
+    const fetchData = document.getElementById('batchFetchData').checked;
+    const btn = document.getElementById('addStockSubmitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>添加中…';
+
+    const resultBox = document.getElementById('batchResultBox');
+    resultBox.style.display = 'block';
+    resultBox.innerHTML = `<div class="text-muted small"><span class="spinner-border spinner-border-sm me-1"></span>正在添加 ${symbols.length} 只股票，请稍候…</div>`;
+
+    try {
+        const res = await fetch('/api/stocks/batch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ symbols, fetch_data: fetchData })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            const r = data.results;
+            let html = '';
+            if (r.added.length)
+                html += `<div class="text-success small mb-1"><i class="bi bi-check-circle me-1"></i>成功添加：${r.added.join(', ')}</div>`;
+            if (r.skipped.length)
+                html += `<div class="text-warning small mb-1"><i class="bi bi-dash-circle me-1"></i>已存在跳过：${r.skipped.join(', ')}</div>`;
+            if (r.failed.length)
+                html += `<div class="text-danger small mb-1"><i class="bi bi-x-circle me-1"></i>失败：${r.failed.map(f => f.symbol || f.error).join(', ')}</div>`;
+            resultBox.innerHTML = html;
+
+            if (r.added.length) {
+                setTimeout(() => location.reload(), 1500);
+            }
+        } else {
+            resultBox.innerHTML = `<div class="text-danger small">${data.error}</div>`;
+        }
+    } catch (e) {
+        resultBox.innerHTML = `<div class="text-danger small">请求失败：${e.message}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '批量添加';
+        resolvedBatch = [];
+    }
+}
+
+function refreshStock(symbol) {
+    if (!confirm(`确定要刷新 ${symbol} 的数据吗？`)) return;
+    fetch(`/api/stocks/${symbol}/refresh`, {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            if (data.warning) { alert(`⚠️ ${data.warning}`); }
+            else { alert('数据刷新成功！'); location.reload(); }
+        } else { alert(`刷新失败: ${data.error}`); }
+    });
+}
+
+function removeStock(symbol) {
+    if (!confirm(`确定要从池中移除 ${symbol} 吗？\n\n注意：这是软删除，数据不会真正删除。`)) return;
+    fetch(`/api/stocks/${symbol}`, {method: 'DELETE'})
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) { alert(`${symbol} 已移除`); location.reload(); }
+        else { alert(`移除失败: ${data.error}`); }
+    });
+}
+
+/* ---- 内联编辑：点击数值 → 输入框 → 保存到 DB ---- */
+function startEdit(el) {
+    // 防止重复编辑
+    if (el.querySelector('.edit-input')) return;
+    const fdId = el.dataset.fdId;
+    if (!fdId) { alert('该股票暂无财务数据，请先在财报管理页解析'); return; }
+
+    const symbol = el.dataset.symbol;
+    const field = el.dataset.field;
+    const suffix = el.dataset.suffix || '';
+    const rawValue = el.dataset.raw;
+    const isText = el.dataset.type === 'text';
+    const multiplier = el.dataset.multiplier ? parseFloat(el.dataset.multiplier) : 1;
+
+    // 保存原始内容用于取消
+    const origHtml = el.innerHTML;
+
+    // 创建输入框
+    const input = document.createElement('input');
+    input.type = isText ? 'text' : 'number';
+    input.step = 'any';
+    input.className = 'edit-input';
+    input.value = rawValue;
+    if (isText) input.style.width = '120px';
+
+    el.innerHTML = '';
+    el.appendChild(input);
+    input.focus();
+    input.select();
+
+    // 停止事件冒泡（避免触发外部 onclick）
+    input.addEventListener('click', e => e.stopPropagation());
+
+    let committed = false;
+
+    // 确认保存
+    function commit() {
+        if (committed) return;
+        committed = true;
+
+        const newVal = input.value.trim();
+        // 值未变化 → 恢复原样
+        if (newVal === rawValue) { el.innerHTML = origHtml; return; }
+
+        el.classList.add('edit-saving');
+        el.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+        const body = {};
+        // 如果有 multiplier（如 Billion 单位字段），保存时乘回原始单位
+        const apiVal = newVal === '' ? null : (isText ? newVal : parseFloat(newVal) * multiplier);
+        body[field] = apiVal;
+        if (isText) body['_type'] = 'text';
+
+        fetch(`/api/stocks/${symbol}/financials/${fdId}`, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        })
+        .then(r => r.json())
+        .then(data => {
+            el.classList.remove('edit-saving');
+            if (data.success) {
+                // 更新显示值和 raw 值（显示的仍为用户输入的单位）
+                const curr = el.dataset.currency || '';
+                const displayVal = newVal === '' ? '—' : (isText ? newVal : (curr + parseFloat(newVal).toFixed(2) + suffix));
+                el.innerHTML = displayVal + '<small class="text-muted ms-1">(手动)</small><i class="bi bi-pencil edit-hint"></i>';
+                el.dataset.raw = newVal;
+            } else {
+                el.innerHTML = origHtml;
+                alert('保存失败: ' + (data.error || '未知错误'));
+            }
+        })
+        .catch(e => {
+            el.classList.remove('edit-saving');
+            el.innerHTML = origHtml;
+            alert('请求失败: ' + e.message);
+        });
+    }
+
+    // 按 Enter 保存，Escape 取消
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { e.preventDefault(); el.innerHTML = origHtml; }
+    });
+    // 失焦保存
+    input.addEventListener('blur', () => setTimeout(commit, 100));
+}
+</script>
+{% endblock %}

@@ -1,0 +1,733 @@
+{% extends "base.html" %}
+
+{% block title %}财报管理 - 股票分析系统{% endblock %}
+
+{% block content %}
+<div class="row mb-4 align-items-center">
+    <div class="col-md-8">
+        <h1><i class="bi bi-file-earmark-text"></i> 财报管理</h1>
+        <p class="text-muted mb-0">从 SEC EDGAR 自动获取并下载每只股票的最新季报（10-Q；外国公司如 NIO 使用 20-F）</p>
+    </div>
+    <div class="col-md-4 text-end d-flex align-items-center justify-content-end gap-2">
+        <!-- AI 模型选择器 -->
+        <select id="modelSelect" class="form-select form-select-sm" style="width:180px" title="选择 AI 解析模型">
+            <option value="claude-sonnet-4-5" selected>Claude Sonnet 4.5</option>
+        </select>
+        <button class="btn btn-outline-danger btn-sm" onclick="resetAllStatus()" id="resetAllBtn"
+                title="重置所有财报的「已解析」状态，不删除文件，方便重新 AI 解析">
+            <i class="bi bi-arrow-counterclockwise"></i> 重置解析状态
+        </button>
+        <button class="btn btn-primary" onclick="fetchAllReports()" id="fetchAllBtn"
+                title="对每只股票依次执行：①从SEC获取元数据 → ②下载财报文件 → ③AI解析提取财务数据。已完成的步骤会自动跳过。">
+            <i class="bi bi-lightning-charge"></i> 一键获取并解析所有财报
+        </button>
+    </div>
+</div>
+
+<!-- 状态提示区 -->
+<div id="alertArea"></div>
+
+<!-- 财报列表 -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-table"></i> 股票财报列表</h5>
+        <small class="text-muted">共 {{ stock_reports|length }} 只股票</small>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>代码</th>
+                        <th>公司名称</th>
+                        <th>类型/年份</th>
+                        <th>申报日期</th>
+                        <th>文件状态</th>
+                        <th>文件大小</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in stock_reports %}
+                    <tr id="row-{{ item.stock.symbol }}">
+                        <td>
+                            <a href="{{ url_for('web.stock_detail', symbol=item.stock.symbol) }}" class="text-decoration-none">
+                                <strong>{{ item.stock.symbol }}</strong>
+                            </a>
+                        </td>
+                        <td>{{ item.stock.name }}</td>
+                        <td>
+                            {% if item.latest_report %}
+                                <span class="badge bg-primary">{{ item.latest_report.report_type }}</span>
+                                {% if item.latest_report.period_end_date %}
+                                    <small class="text-muted">截至 {{ item.latest_report.period_end_date.strftime('%Y-%m-%d') }}</small>
+                                {% elif item.latest_report.filing_date %}
+                                    <small class="text-muted">申报 {{ item.latest_report.filing_date.strftime('%Y-%m-%d') }}</small>
+                                {% endif %}
+                            {% else %}
+                                <span class="text-muted">未获取</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if item.latest_report %}
+                                <small>{{ item.latest_report.filing_date.strftime('%Y-%m-%d') if item.latest_report.filing_date else 'N/A' }}</small>
+                            {% else %}
+                                <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td id="status-{{ item.stock.symbol }}">
+                            {% if item.latest_report and item.latest_report.is_processed and item.latest_report.analysis_error and item.latest_report.analysis_error.startswith('CHUNKED_CONFLICT') %}
+                                <span class="badge bg-warning text-dark" title="{{ item.latest_report.analysis_error }}"><i class="bi bi-cpu"></i> 已解析 <i class="bi bi-exclamation-triangle"></i></span>
+                            {% elif item.latest_report and item.latest_report.is_processed %}
+                                <span class="badge bg-primary"><i class="bi bi-cpu"></i> 已解析</span>
+                            {% elif item.latest_report and item.latest_report.analysis_error %}
+                                <span class="badge bg-warning text-dark" title="{{ item.latest_report.analysis_error }}"><i class="bi bi-exclamation-triangle"></i> 解析失败</span>
+                            {% elif item.latest_report and item.latest_report.is_downloaded %}
+                                <span class="badge bg-success"><i class="bi bi-check-circle"></i> 已下载</span>
+                            {% elif item.latest_report %}
+                                <span class="badge bg-warning text-dark"><i class="bi bi-cloud"></i> 元数据已获取</span>
+                            {% else %}
+                                <span class="badge bg-secondary"><i class="bi bi-dash-circle"></i> 未获取</span>
+                            {% endif %}
+                        </td>
+                        <td id="size-{{ item.stock.symbol }}">
+                            {% if item.latest_report and item.latest_report.file_size %}
+                                {{ "%.1f"|format(item.latest_report.file_size / 1024 / 1024) }} MB
+                            {% else %}
+                                <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <!-- 获取元数据 -->
+                                <button class="btn btn-outline-info"
+                                        onclick="fetchReport('{{ item.stock.symbol }}')"
+                                        title="从SEC EDGAR获取最新季报信息"
+                                        id="fetch-btn-{{ item.stock.symbol }}">
+                                    <i class="bi bi-cloud-arrow-down"></i> 获取信息
+                                </button>
+                                <!-- 下载文件 -->
+                                <button class="btn btn-outline-success"
+                                        onclick="downloadReport('{{ item.stock.symbol }}')"
+                                        title="从SEC下载文件到本地"
+                                        id="download-btn-{{ item.stock.symbol }}"
+                                        {% if not item.latest_report %}disabled{% endif %}>
+                                    <i class="bi bi-file-earmark-arrow-down"></i> 下载
+                                </button>
+                                <!-- 手动上传 -->
+                                <button class="btn btn-outline-warning"
+                                        onclick="triggerUpload('{{ item.stock.symbol }}')"
+                                        title="手动上传财报（PDF/HTML）">
+                                    <i class="bi bi-upload"></i> 上传
+                                </button>
+                                <input type="file"
+                                       id="upload-input-{{ item.stock.symbol }}"
+                                       accept=".pdf,.htm,.html"
+                                       style="display:none"
+                                       onchange="uploadReport('{{ item.stock.symbol }}', this)">
+                                <!-- 在SEC查看 -->
+                                {% if item.latest_report and item.latest_report.filing_url %}
+                                <a href="{{ item.latest_report.filing_url }}"
+                                   target="_blank"
+                                   class="btn btn-outline-secondary"
+                                   title="在SEC EDGAR官网查看">
+                                    <i class="bi bi-box-arrow-up-right"></i> SEC
+                                </a>
+                                {% endif %}
+                                <!-- AI 解析 -->
+                                <button class="btn btn-outline-primary"
+                                        onclick="analyzeReport('{{ item.stock.symbol }}')"
+                                        title="使用 AI 模型提取财务数据"
+                                        id="analyze-btn-{{ item.stock.symbol }}"
+                                        {% if not item.latest_report or not item.latest_report.is_downloaded %}disabled{% endif %}>
+                                    <i class="bi bi-cpu"></i> AI解析
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted py-5">
+                            <i class="bi bi-inbox" style="font-size: 3rem;"></i>
+                            <p class="mt-2">股票池为空，请先在股票池添加股票</p>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 历史记录折叠区 -->
+{% for item in stock_reports %}
+{% if item.all_reports|length > 1 %}
+<div class="card mt-2">
+    <div class="card-header py-2" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#history-{{ item.stock.symbol }}">
+        <i class="bi bi-clock-history"></i> {{ item.stock.symbol }} 历史财报（{{ item.report_count }} 条记录）
+        <i class="bi bi-chevron-down float-end"></i>
+    </div>
+    <div class="collapse" id="history-{{ item.stock.symbol }}">
+        <div class="card-body p-0">
+            <table class="table table-sm mb-0">
+                <thead><tr><th>年份</th><th>类型</th><th>申报日期</th><th>状态</th><th>链接</th></tr></thead>
+                <tbody>
+                    {% for r in item.all_reports %}
+                    <tr>
+                        <td>{{ r.fiscal_year }}</td>
+                        <td><span class="badge bg-light text-dark">{{ r.report_type }}</span></td>
+                        <td><small>{{ r.filing_date.strftime('%Y-%m-%d') if r.filing_date else 'N/A' }}</small></td>
+                        <td>
+                            {% if r.is_downloaded %}
+                                <span class="badge bg-success">已下载</span>
+                            {% else %}
+                                <span class="badge bg-secondary">未下载</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.filing_url %}
+                            <a href="{{ r.filing_url }}" target="_blank" class="btn btn-xs btn-outline-secondary btn-sm py-0 px-1">
+                                <i class="bi bi-box-arrow-up-right"></i>
+                            </a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endfor %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Timer leak prevention: collect all setInterval IDs for cleanup
+const _activeTimers = [];
+function _removeTimer(id) {
+    const idx = _activeTimers.indexOf(id);
+    if (idx !== -1) _activeTimers.splice(idx, 1);
+}
+window.addEventListener('beforeunload', () => {
+    _activeTimers.forEach(id => clearInterval(id));
+    _activeTimers.length = 0;
+});
+
+function showAlert(msg, type='info') {
+    const area = document.getElementById('alertArea');
+    area.innerHTML = `<div class="alert alert-${type} alert-dismissible fade show" role="alert">
+        ${msg}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>`;
+    setTimeout(() => { const a = area.querySelector('.alert'); if(a) a.classList.remove('show'); }, 5000);
+}
+
+function setRowStatus(symbol, statusHtml, sizeHtml) {
+    const statusEl = document.getElementById(`status-${symbol}`);
+    const sizeEl = document.getElementById(`size-${symbol}`);
+    if (statusEl && statusHtml) statusEl.innerHTML = statusHtml;
+    if (sizeEl && sizeHtml) sizeEl.innerHTML = sizeHtml;
+}
+
+function resetAllStatus() {
+    if (!confirm('确定要重置所有财报的解析状态吗？\n\n• 已下载的文件不会删除\n• 所有「已解析」状态会变为「已下载」\n• 之后可重新执行 AI 解析')) return;
+
+    const btn = document.getElementById('resetAllBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 重置中...';
+
+    fetch('/api/reports/reset-all-status', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showAlert(`✅ ${data.message}，刷新页面以查看最新状态`, 'success');
+            // 更新页面上所有「已解析」状态为「已下载」
+            for (const sym of Object.keys(stockStates)) {
+                if (stockStates[sym].isProcessed) {
+                    stockStates[sym].isProcessed = false;
+                    stockStates[sym].hasAnalysisError = false;
+                    const statusEl = document.getElementById(`status-${sym}`);
+                    if (statusEl && stockStates[sym].isDownloaded) {
+                        statusEl.innerHTML = '<span class="badge bg-success"><i class="bi bi-check-circle"></i> 已下载</span>';
+                    }
+                    // 启用 AI 解析按钮
+                    const analyzeBtn = document.getElementById(`analyze-btn-${sym}`);
+                    if (analyzeBtn && stockStates[sym].isDownloaded) analyzeBtn.disabled = false;
+                }
+            }
+        } else {
+            showAlert(`❌ 重置失败: ${data.error}`, 'danger');
+        }
+    })
+    .catch(e => showAlert(`❌ 请求失败: ${e}`, 'danger'))
+    .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i> 重置解析状态';
+    });
+}
+
+function fetchReport(symbol) {
+    const btn = document.getElementById(`fetch-btn-${symbol}`);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 获取中...';
+
+    fetch(`/api/reports/${symbol}/fetch`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const year = data.report?.fiscal_year || '';
+            setRowStatus(symbol,
+                `<span class="badge bg-warning text-dark"><i class="bi bi-cloud"></i> 元数据已获取</span>`,
+                '—'
+            );
+            // 更新年份和申报日期
+            const row = document.getElementById(`row-${symbol}`);
+            if (row && data.report) {
+                row.cells[2].innerHTML = `<span class="badge bg-primary">${data.report.fiscal_year}</span>`;
+                row.cells[3].innerHTML = `<small>${data.report.filing_date || 'N/A'}</small>`;
+            }
+            // 启用下载按钮
+            const dlBtn = document.getElementById(`download-btn-${symbol}`);
+            if (dlBtn) dlBtn.disabled = false;
+            // 添加SEC查看按钮
+            if (data.report?.filing_url) {
+                const btnGroup = btn.closest('.btn-group');
+                if (!btnGroup.querySelector('a[target="_blank"]')) {
+                    const secLink = document.createElement('a');
+                    secLink.href = data.report.filing_url;
+                    secLink.target = '_blank';
+                    secLink.className = 'btn btn-outline-secondary btn-sm';
+                    secLink.title = '在SEC EDGAR官网查看';
+                    secLink.innerHTML = '<i class="bi bi-box-arrow-up-right"></i> SEC查看';
+                    btnGroup.appendChild(secLink);
+                }
+            }
+            showAlert(`✅ ${symbol} 最新10-K信息已获取（${year}年）${data.already_exists ? '（记录已存在）' : ''}`, 'success');
+        } else {
+            showAlert(`❌ ${symbol} 获取失败: ${data.error}`, 'danger');
+        }
+    })
+    .catch(e => showAlert(`❌ 请求失败: ${e}`, 'danger'))
+    .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-arrow-down"></i> 获取信息';
+    });
+}
+
+function downloadReport(symbol) {
+    const btn = document.getElementById(`download-btn-${symbol}`);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 下载中...';
+    setRowStatus(symbol, `<span class="badge bg-info text-dark"><i class="bi bi-arrow-down-circle"></i> 下载中...</span>`, null);
+
+    fetch(`/api/reports/${symbol}/download`, { method: 'POST', headers: {'Content-Type': 'application/json'} })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const sizeStr = data.file_size_mb ? `${data.file_size_mb} MB` : '—';
+            setRowStatus(symbol,
+                `<span class="badge bg-success"><i class="bi bi-check-circle"></i> 已下载</span>`,
+                sizeStr
+            );
+            // 启用 AI 解析按钮
+            const analyzeBtn = document.getElementById(`analyze-btn-${symbol}`);
+            if (analyzeBtn) analyzeBtn.disabled = false;
+            showAlert(`✅ ${symbol} 10-K 下载成功（${sizeStr}）${data.already_downloaded ? '（文件已存在）' : ''}`, 'success');
+        } else {
+            setRowStatus(symbol, `<span class="badge bg-danger">下载失败</span>`, null);
+            showAlert(`❌ ${symbol} 下载失败: ${data.error}`, 'danger');
+        }
+    })
+    .catch(e => showAlert(`❌ 请求失败: ${e}`, 'danger'))
+    .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-file-earmark-arrow-down"></i> 下载PDF';
+    });
+}
+
+// 从 Jinja 模板注入每只股票的初始状态，避免不必要的网络请求
+const stockStates = {
+    {% for item in stock_reports %}
+    '{{ item.stock.symbol }}': {
+        hasReport: {{ 'true' if item.latest_report else 'false' }},
+        isDownloaded: {{ 'true' if item.latest_report and item.latest_report.is_downloaded else 'false' }},
+        isProcessed: {{ 'true' if item.latest_report and item.latest_report.is_processed else 'false' }},
+        hasAnalysisError: {{ 'true' if item.latest_report and item.latest_report.analysis_error else 'false' }}
+    }{% if not loop.last %},{% endif %}
+    {% endfor %}
+};
+
+async function fetchAllReports() {
+    const btn = document.getElementById('fetchAllBtn');
+    const model = document.getElementById('modelSelect').value;
+    btn.disabled = true;
+
+    const symbols = Object.keys(stockStates);
+    const total = symbols.length;
+    let completed = 0, failed = 0, skipped = 0;
+
+    for (const sym of symbols) {
+        completed++;
+        const progress = `(${completed}/${total})`;
+        const row = document.getElementById(`row-${sym}`);
+        const state = stockStates[sym];
+        let sizeStr = '—';
+
+        // 已解析 → 直接跳过，不发任何请求
+        if (state.isProcessed) {
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> ${progress} ${sym} 已解析，跳过`;
+            skipped++;
+            await new Promise(res => setTimeout(res, 100));
+            continue;
+        }
+
+        try {
+            // ---- Step 1: 获取元数据（已有记录也需调用以获取最新 accession_number） ----
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> ${progress} ${sym} 获取元数据...`;
+            setRowStatus(sym, `<span class="badge bg-info text-dark"><i class="bi bi-cloud-arrow-down"></i> 获取元数据...</span>`, null);
+
+            const fetchRes = await fetch(`/api/reports/${sym}/fetch`, { method: 'POST' });
+            const fetchData = await fetchRes.json();
+            if (!fetchData.success) {
+                failed++;
+                setRowStatus(sym, `<span class="badge bg-danger">获取失败</span>`, null);
+                await new Promise(res => setTimeout(res, 500));
+                continue;
+            }
+
+            // 更新年份和申报日期列
+            if (row && fetchData.report) {
+                row.cells[2].innerHTML = `<span class="badge bg-primary">${fetchData.report.report_type || ''}</span> <small class="text-muted">${fetchData.report.filing_date || ''}</small>`;
+                row.cells[3].innerHTML = `<small>${fetchData.report.filing_date || 'N/A'}</small>`;
+            }
+            const dlBtn = document.getElementById(`download-btn-${sym}`);
+            if (dlBtn) dlBtn.disabled = false;
+
+            // 如果后端返回已解析（可能状态在其他地方更新了），也跳过
+            if (fetchData.already_exists && fetchData.report?.is_processed) {
+                setRowStatus(sym, `<span class="badge bg-primary"><i class="bi bi-cpu"></i> 已解析</span>`, null);
+                state.isProcessed = true;
+                skipped++;
+                await new Promise(res => setTimeout(res, 200));
+                continue;
+            }
+
+            // 判断是否需要下载
+            let skipDownload = (fetchData.already_exists && fetchData.report?.is_downloaded) || state.isDownloaded;
+
+            if (!skipDownload) {
+                setRowStatus(sym, `<span class="badge bg-warning text-dark"><i class="bi bi-cloud"></i> 元数据已获取</span>`, null);
+                await new Promise(res => setTimeout(res, 500));
+
+                // ---- Step 2: 下载文件 ----
+                btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> ${progress} ${sym} 下载中...`;
+                setRowStatus(sym, `<span class="badge bg-info text-dark"><i class="bi bi-arrow-down-circle"></i> 下载中...</span>`, null);
+
+                const dlRes = await fetch(`/api/reports/${sym}/download`, { method: 'POST', headers: {'Content-Type': 'application/json'} });
+                const dlData = await dlRes.json();
+                if (!dlData.success) {
+                    failed++;
+                    setRowStatus(sym, `<span class="badge bg-danger">下载失败</span>`, null);
+                    await new Promise(res => setTimeout(res, 500));
+                    continue;
+                }
+
+                sizeStr = dlData.file_size_mb ? `${dlData.file_size_mb} MB` : '—';
+            } else {
+                sizeStr = fetchData.report?.file_size_mb ? `${fetchData.report.file_size_mb} MB` : '—';
+            }
+
+            setRowStatus(sym, `<span class="badge bg-success"><i class="bi bi-check-circle"></i> 已下载</span>`, sizeStr);
+            const analyzeBtn = document.getElementById(`analyze-btn-${sym}`);
+            if (analyzeBtn) analyzeBtn.disabled = false;
+            await new Promise(res => setTimeout(res, 300));
+
+            // ---- Step 3: AI 解析（含 rate limit 重试） ----
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> ${progress} ${sym} AI解析中...`;
+            setRowStatus(sym, `<span class="badge bg-info text-dark"><i class="bi bi-cpu"></i> AI解析中...</span>`, null);
+
+            let analyzeSuccess = false;
+            let analyzeRetry = 0;
+            const analyzeMaxRetries = 3;
+
+            while (!analyzeSuccess && analyzeRetry <= analyzeMaxRetries) {
+                const analyzeRes = await fetch(`/api/reports/${sym}/analyze`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ model })
+                });
+                const analyzeData = await analyzeRes.json();
+
+                if (analyzeData.success) {
+                    analyzeSuccess = true;
+                    state.isProcessed = true;
+                    state.isDownloaded = true;
+
+                    // 检查分块冲突
+                    const hasConflicts = analyzeData.chunk_conflicts && Object.keys(analyzeData.chunk_conflicts).length > 0;
+                    if (hasConflicts) {
+                        const conflictFields = Object.keys(analyzeData.chunk_conflicts).join(', ');
+                        setRowStatus(sym,
+                            `<span class="badge bg-warning text-dark" title="冲突: ${conflictFields}"><i class="bi bi-cpu"></i> 已解析 <i class="bi bi-exclamation-triangle"></i></span>`,
+                            sizeStr);
+                    } else {
+                        setRowStatus(sym, `<span class="badge bg-primary"><i class="bi bi-cpu"></i> 已解析</span>`, sizeStr);
+                    }
+
+                    if (row && analyzeData.report) {
+                        const rp = analyzeData.report;
+                        const s = analyzeData.summary || {};
+                        const periodEnd = s.period_end_date || rp.filing_date || '';
+                        row.cells[2].innerHTML =
+                            `<span class="badge bg-primary">${rp.report_type || ''}</span> `+
+                            `<small class="text-muted">截至 ${periodEnd}</small>`;
+                    }
+                } else if ((analyzeData.error_type === 'rate_limit' || analyzeRes.status === 429) && analyzeRetry < analyzeMaxRetries) {
+                    // 速率限制 — 等待后重试
+                    analyzeRetry++;
+                    const waitSec = analyzeData.retry_after || 65;
+                    btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> ${progress} ${sym} 速率限制，等待${waitSec}s (${analyzeRetry}/${analyzeMaxRetries})`;
+                    setRowStatus(sym,
+                        `<span class="badge bg-warning text-dark"><i class="bi bi-clock"></i> 等待${waitSec}s</span>`,
+                        null);
+
+                    // 倒计时显示
+                    let remaining = waitSec;
+                    await new Promise(resolve => {
+                        const timer = setInterval(() => {
+                            remaining--;
+                            if (remaining > 0) {
+                                btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> ${progress} ${sym} 等待${remaining}s...`;
+                            } else {
+                                clearInterval(timer);
+                                resolve();
+                            }
+                        }, 1000);
+                    });
+                } else {
+                    // 非限流错误或重试耗尽
+                    setRowStatus(sym, `<span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle"></i> 解析失败</span>`, sizeStr);
+                    failed++;
+                    break;
+                }
+            }
+
+        } catch(e) {
+            failed++;
+            setRowStatus(sym, `<span class="badge bg-danger">异常</span>`, null);
+        }
+
+        await new Promise(res => setTimeout(res, 300));
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-lightning-charge"></i> 一键获取并解析所有财报';
+    const newlyDone = total - failed - skipped;
+    const parts = [];
+    if (newlyDone > 0) parts.push(`${newlyDone} 只新完成`);
+    if (skipped > 0) parts.push(`${skipped} 只已跳过`);
+    if (failed > 0) parts.push(`${failed} 只失败`);
+    showAlert(`✅ 全流程完成：${parts.join('，')}`, failed > 0 ? 'warning' : 'success');
+}
+
+function analyzeReport(symbol, _retryCount) {
+    const retryCount = _retryCount || 0;
+    const maxRetries = 3;
+    const model = document.getElementById('modelSelect').value;
+    const btn = document.getElementById(`analyze-btn-${symbol}`);
+    const origHtml = '<i class="bi bi-cpu"></i> AI解析';
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 解析中...';
+    setRowStatus(symbol, `<span class="badge bg-info text-dark"><i class="bi bi-cpu"></i> AI解析中...</span>`, null);
+
+    fetch(`/api/reports/${symbol}/analyze`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ model })
+    })
+    .then(r => r.json().then(body => ({status: r.status, body})))
+    .then(({status, body: data}) => {
+        if (data.success) {
+            // 检查是否有分块冲突
+            const hasConflicts = data.chunk_conflicts && Object.keys(data.chunk_conflicts).length > 0;
+            if (hasConflicts) {
+                const conflictFields = Object.keys(data.chunk_conflicts).join(', ');
+                setRowStatus(symbol,
+                    `<span class="badge bg-warning text-dark" title="分块冲突字段: ${conflictFields}"><i class="bi bi-cpu"></i> 已解析 <i class="bi bi-exclamation-triangle"></i></span>`,
+                    null
+                );
+                showAlert(`⚠️ ${symbol} AI解析完成，但以下字段在分块提取中有冲突需人工审核: ${conflictFields}`, 'warning');
+            } else {
+                setRowStatus(symbol,
+                    `<span class="badge bg-primary"><i class="bi bi-cpu"></i> 已解析</span>`,
+                    null
+                );
+            }
+            // 更新类型/年份列
+            const row = document.getElementById(`row-${symbol}`);
+            if (row && data.report) {
+                const rp = data.report;
+                const s = data.summary || {};
+                const periodEnd = s.period_end_date || rp.filing_date || '';
+                row.cells[2].innerHTML =
+                    `<span class="badge bg-primary">${rp.report_type || ''}</span> `+
+                    `<small class="text-muted">截至 ${periodEnd}</small>`;
+            }
+            // 构建摘要 toast
+            const s = data.summary || {};
+            const lines = [];
+            if (s.revenue_b != null)        lines.push(`营收 $${s.revenue_b}B`);
+            if (s.net_income_b != null)     lines.push(`净利润 $${s.net_income_b}B`);
+            if (s.gross_margin_pct != null) lines.push(`毛利率 ${s.gross_margin_pct}%`);
+            if (s.net_margin_pct != null)   lines.push(`净利率 ${s.net_margin_pct}%`);
+            if (s.currency != null)         lines.push(`币种 ${s.currency}`);
+            const detail = lines.length ? `<br><small class="text-muted">${lines.join(' &nbsp;|&nbsp; ')}</small>` : '';
+            showAlert(`✅ ${symbol} AI解析成功（${model}）${detail}`, hasConflicts ? 'warning' : 'success');
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+        } else if ((data.error_type === 'rate_limit' || status === 429) && retryCount < maxRetries) {
+            // 速率限制 — 倒计时等待后自动重试
+            const waitSec = data.retry_after || 65;
+            let remaining = waitSec;
+            setRowStatus(symbol,
+                `<span class="badge bg-warning text-dark"><i class="bi bi-clock"></i> 速率限制，等待${remaining}s</span>`,
+                null);
+            showAlert(`⏳ ${symbol} 触发API速率限制，${waitSec}秒后自动重试 (${retryCount + 1}/${maxRetries})...`, 'warning');
+
+            const timer = setInterval(() => {
+                remaining--;
+                if (remaining > 0) {
+                    setRowStatus(symbol,
+                        `<span class="badge bg-warning text-dark"><i class="bi bi-clock"></i> 等待${remaining}s (${retryCount + 1}/${maxRetries})</span>`,
+                        null);
+                } else {
+                    clearInterval(timer);
+                    _removeTimer(timer);
+                }
+            }, 1000);
+            _activeTimers.push(timer);
+
+            setTimeout(() => {
+                clearInterval(timer);
+                _removeTimer(timer);
+                analyzeReport(symbol, retryCount + 1);
+            }, waitSec * 1000);
+        } else {
+            setRowStatus(symbol, `<span class="badge bg-danger">解析失败</span>`, null);
+            showAlert(`❌ ${symbol} AI解析失败: ${data.error}`, 'danger');
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+        }
+    })
+    .catch(e => {
+        showAlert(`❌ 请求失败: ${e}`, 'danger');
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+    });
+}
+
+function triggerUpload(symbol) {
+    document.getElementById(`upload-input-${symbol}`).click();
+}
+
+function uploadReport(symbol, input) {
+    if (!input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    const btn = input.previousElementSibling; // 上传按钮
+    const origHtml = btn.innerHTML;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    setRowStatus(symbol, `<span class="badge bg-info text-dark"><i class="bi bi-arrow-up-circle"></i> 上传中...</span>`, null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    fetch(`/api/reports/${symbol}/upload`, {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const sizeStr = data.file_size_mb ? `${data.file_size_mb} MB` : '—';
+            setRowStatus(symbol,
+                `<span class="badge bg-success"><i class="bi bi-check-circle"></i> 已下载</span>`,
+                sizeStr
+            );
+            // 启用 AI 解析按钮
+            const analyzeBtn = document.getElementById(`analyze-btn-${symbol}`);
+            if (analyzeBtn) analyzeBtn.disabled = false;
+            // 启用下载按钮
+            const dlBtn = document.getElementById(`download-btn-${symbol}`);
+            if (dlBtn) dlBtn.disabled = false;
+            showAlert(`✅ ${symbol} 财报上传成功（${sizeStr}）`, 'success');
+        } else {
+            setRowStatus(symbol, `<span class="badge bg-danger">上传失败</span>`, null);
+            showAlert(`❌ ${symbol} 上传失败: ${data.error}`, 'danger');
+        }
+    })
+    .catch(e => showAlert(`❌ 请求失败: ${e}`, 'danger'))
+    .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+        input.value = ''; // 清空，允许重复上传同一文件
+    });
+}
+
+// 页面加载时，对所有尚未获取元数据的股票自动获取
+document.addEventListener('DOMContentLoaded', async function() {
+    const unfetchedSymbols = [
+        {% for item in stock_reports %}
+        {% if not item.latest_report %}
+        '{{ item.stock.symbol }}',
+        {% endif %}
+        {% endfor %}
+    ].filter(Boolean);
+
+    if (unfetchedSymbols.length === 0) return;
+
+    showAlert(`⏳ 正在自动获取 ${unfetchedSymbols.length} 只股票的财报信息...`, 'info');
+
+    for (const sym of unfetchedSymbols) {
+        try {
+            const r = await fetch(`/api/reports/${sym}/fetch`, { method: 'POST' });
+            const data = await r.json();
+            if (data.success) {
+                const dlBtn = document.getElementById(`download-btn-${sym}`);
+                if (dlBtn) dlBtn.disabled = false;
+                const row = document.getElementById(`row-${sym}`);
+                if (row && data.report) {
+                    row.cells[2].innerHTML = `<span class="badge bg-primary">${data.report.fiscal_year}</span>`;
+                    row.cells[3].innerHTML = `<small>${data.report.filing_date || 'N/A'}</small>`;
+                    document.getElementById(`status-${sym}`).innerHTML =
+                        `<span class="badge bg-warning text-dark"><i class="bi bi-cloud"></i> 元数据已获取</span>`;
+                    // 添加 SEC 查看按钮
+                    if (data.report.filing_url) {
+                        const btnGroup = document.getElementById(`fetch-btn-${sym}`)?.closest('.btn-group');
+                        if (btnGroup && !btnGroup.querySelector('a[target="_blank"]')) {
+                            const secLink = document.createElement('a');
+                            secLink.href = data.report.filing_url;
+                            secLink.target = '_blank';
+                            secLink.className = 'btn btn-outline-secondary btn-sm';
+                            secLink.title = '在SEC EDGAR官网查看';
+                            secLink.innerHTML = '<i class="bi bi-box-arrow-up-right"></i> SEC查看';
+                            btnGroup.appendChild(secLink);
+                        }
+                    }
+                }
+            }
+        } catch(e) { /* ignore */ }
+        await new Promise(res => setTimeout(res, 600));
+    }
+
+    if (unfetchedSymbols.length > 0) {
+        showAlert(`✅ 自动获取完成`, 'success');
+    }
+});
+</script>
+{% endblock %}

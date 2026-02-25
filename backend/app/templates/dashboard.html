@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+
+{% block title %}仪表盘 - 股票分析系统{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="bi bi-speedometer2"></i> 仪表盘
+        </h1>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-md-4">
+        <a href="/stocks" class="text-decoration-none">
+        <div class="card bg-primary text-white" style="cursor:pointer; transition:opacity 0.15s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-subtitle mb-2">股票池</h6>
+                        <h2 class="card-title mb-0">{{ stats.stocks_in_pool }}</h2>
+                    </div>
+                    <i class="bi bi-collection" style="font-size: 3rem; opacity: 0.5;"></i>
+                </div>
+                <small>总计 {{ stats.total_stocks }} 只历史记录</small>
+            </div>
+        </div>
+        </a>
+    </div>
+
+    <div class="col-md-4">
+        <a href="/principles" class="text-decoration-none">
+        <div class="card bg-info text-white" style="cursor:pointer; transition:opacity 0.15s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-subtitle mb-2">投资原则</h6>
+                        <h2 class="card-title mb-0">{{ stats.principles_count }}</h2>
+                    </div>
+                    <i class="bi bi-lightbulb-fill" style="font-size: 3rem; opacity: 0.5;"></i>
+                </div>
+                <small>已激活的个人原则</small>
+            </div>
+        </div>
+        </a>
+    </div>
+
+    <div class="col-md-4">
+        <a href="/agent" class="text-decoration-none">
+        <div class="card bg-warning text-dark" style="cursor:pointer; transition:opacity 0.15s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-subtitle mb-2">AI 对话</h6>
+                        <h2 class="card-title mb-0">{{ stats.conversations_count }}</h2>
+                    </div>
+                    <i class="bi bi-chat-dots-fill" style="font-size: 3rem; opacity: 0.5;"></i>
+                </div>
+                <small>历史对话记录</small>
+            </div>
+        </div>
+        </a>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-pie-chart"></i> 股票池行业分布
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="sectorChart" height="250"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-bar-chart"></i> 市值分布
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="marketCapChart" height="250"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Stocks and News -->
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-clock-history"></i> 最近添加的股票
+                </h5>
+                <a href="{{ url_for('web.stock_pool') }}" class="btn btn-sm btn-primary">查看全部</a>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>代码</th>
+                                <th>名称</th>
+                                <th>当前价格</th>
+                                <th>市值</th>
+                                <th>添加时间</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for stock in recent_stocks %}
+                            <tr>
+                                <td><strong>{{ stock.symbol }}</strong></td>
+                                <td>{{ stock.name }}</td>
+                                <td>
+                                    {% if stock.current_price %}
+                                        <strong class="text-success">${{ "%.2f"|format(stock.current_price) }}</strong>
+                                    {% else %}
+                                        <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if stock.market_cap %}
+                                        ${{ "%.1f"|format(stock.market_cap) }}B
+                                    {% else %}
+                                        <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td><small class="text-muted">{{ stock.created_at.strftime('%Y-%m-%d') if stock.created_at else 'N/A' }}</small></td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="5" class="text-center text-muted">暂无股票</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-stars text-warning"></i> AI 选股建议
+                </h5>
+                <button class="btn btn-sm btn-outline-secondary" onclick="refreshInsight()" id="insightRefreshBtn" title="重新生成">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div class="card-body" id="insightCardBody" style="overflow-y:auto; max-height:320px;">
+                <!-- 初始状态：点击生成 -->
+                <div id="insightPlaceholder" class="text-center py-4">
+                    <i class="bi bi-stars text-warning" style="font-size:2.5rem; opacity:0.5;"></i>
+                    <p class="text-muted mt-2 mb-3">AI 将结合股票池数据、投资原则和新闻分析<br>生成个性化选股建议</p>
+                    <button class="btn btn-primary btn-sm" onclick="loadInsight()">
+                        <i class="bi bi-robot me-1"></i>生成 AI 建议
+                    </button>
+                </div>
+                <!-- 骨架屏（加载中） -->
+                <div id="insightSkeleton" style="display:none;">
+                    <div class="placeholder-glow mb-2"><span class="placeholder col-8 rounded"></span></div>
+                    <div class="placeholder-glow mb-2"><span class="placeholder col-10 rounded"></span></div>
+                    <div class="placeholder-glow mb-2"><span class="placeholder col-7 rounded"></span></div>
+                    <div class="placeholder-glow mb-2"><span class="placeholder col-9 rounded"></span></div>
+                    <div class="placeholder-glow"><span class="placeholder col-6 rounded"></span></div>
+                </div>
+                <!-- AI 内容区 -->
+                <div id="insightContent" style="display:none; font-size:0.88rem; line-height:1.7;"></div>
+                <!-- 错误提示 -->
+                <div id="insightError" style="display:none" class="text-muted text-center small py-3">
+                    <i class="bi bi-exclamation-circle me-1"></i>
+                    <span id="insightErrorMsg">加载失败</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<!-- marked.js for AI insight Markdown rendering -->
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+<script>
+marked.setOptions({ breaks: true, gfm: true });
+
+/* ===== AI 选股建议 ===== */
+async function loadInsight() {
+    document.getElementById('insightPlaceholder').style.display = 'none';
+    document.getElementById('insightSkeleton').style.display = 'block';
+    document.getElementById('insightContent').style.display = 'none';
+    document.getElementById('insightError').style.display = 'none';
+    const btn = document.getElementById('insightRefreshBtn');
+    if (btn) btn.disabled = true;
+
+    try {
+        const res = await fetch('/api/agent/dashboard_insight');
+        const data = await res.json();
+        document.getElementById('insightSkeleton').style.display = 'none';
+        if (btn) btn.disabled = false;
+
+        if (data.success && data.insight) {
+            const contentEl = document.getElementById('insightContent');
+            contentEl.innerHTML = safeParse(data.insight);
+            contentEl.style.display = 'block';
+        } else {
+            const errMsg = document.getElementById('insightErrorMsg');
+            if (errMsg) errMsg.textContent = data.error || '生成失败，请稍后重试';
+            document.getElementById('insightError').style.display = 'block';
+        }
+    } catch (e) {
+        document.getElementById('insightSkeleton').style.display = 'none';
+        if (btn) btn.disabled = false;
+        const errMsg = document.getElementById('insightErrorMsg');
+        if (errMsg) errMsg.textContent = '网络请求失败：' + e.message;
+        document.getElementById('insightError').style.display = 'block';
+    }
+}
+
+function refreshInsight() {
+    loadInsight();
+}
+
+// Sector Distribution Chart
+const sectorData = {{ sector_data | tojson }};
+const sectorCtx = document.getElementById('sectorChart').getContext('2d');
+new Chart(sectorCtx, {
+    type: 'doughnut',
+    data: {
+        labels: sectorData.labels,
+        datasets: [{
+            data: sectorData.values,
+            backgroundColor: [
+                '#0d6efd', '#6610f2', '#6f42c1', '#d63384',
+                '#dc3545', '#fd7e14', '#ffc107', '#20c997'
+            ]
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                position: 'right'
+            }
+        }
+    }
+});
+
+// Market Cap Distribution Chart
+const marketCapData = {{ market_cap_data | tojson }};
+const marketCapCtx = document.getElementById('marketCapChart').getContext('2d');
+new Chart(marketCapCtx, {
+    type: 'bar',
+    data: {
+        labels: marketCapData.labels,
+        datasets: [{
+            label: '股票数量',
+            data: marketCapData.values,
+            backgroundColor: '#0d6efd'
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            y: {
+                beginAtZero: true,
+                ticks: {
+                    stepSize: 1
+                }
+            }
+        }
+    }
+});
+
+// AI 选股建议现在需要手动点击生成，不再自动加载
+</script>
+{% endblock %}

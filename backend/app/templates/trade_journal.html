@@ -1,0 +1,540 @@
+{% extends "base.html" %}
+
+{% block title %}交易日记 - 股票分析系统{% endblock %}
+
+{% block extra_css %}
+<style>
+    .risk-badge {
+        font-size: 1rem;
+        padding: 0.4em 0.7em;
+        border-radius: 0.5rem;
+        font-weight: 700;
+    }
+    .risk-low    { background: #198754; color: #fff; }
+    .risk-medium { background: #fd7e14; color: #fff; }
+    .risk-high   { background: #dc3545; color: #fff; }
+    .risk-bar-wrap { height: 8px; background: #e9ecef; border-radius: 4px; overflow: hidden; }
+    .risk-bar { height: 100%; border-radius: 4px; transition: width .4s; }
+    .trade-row { cursor: pointer; }
+    .trade-row:hover { background: #f8f9fa; }
+    .violation-tag {
+        display: inline-block;
+        background: #fff3cd;
+        border: 1px solid #ffc107;
+        color: #856404;
+        border-radius: 12px;
+        padding: 2px 10px;
+        font-size: 0.78rem;
+        margin: 2px;
+    }
+    .sidebar-panel {
+        position: fixed;
+        top: 0; right: -440px;
+        width: 420px;
+        height: 100vh;
+        background: #fff;
+        box-shadow: -4px 0 20px rgba(0,0,0,.15);
+        z-index: 1055;
+        transition: right .3s ease;
+        display: flex;
+        flex-direction: column;
+    }
+    .sidebar-panel.open { right: 0; }
+    .sidebar-overlay {
+        display: none;
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,.4);
+        z-index: 1054;
+    }
+    .sidebar-overlay.show { display: block; }
+    .sidebar-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1.5rem;
+    }
+    .stat-card { border-left: 4px solid; }
+    .stat-card.blue  { border-color: #0d6efd; }
+    .stat-card.green { border-color: #198754; }
+    .stat-card.red   { border-color: #dc3545; }
+    .stat-card.orange{ border-color: #fd7e14; }
+    #emptyState { display: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0"><i class="bi bi-journal-check me-2 text-primary"></i>交易日记</h4>
+    <div class="d-flex gap-2">
+        <a href="/api/trades/export" class="btn btn-outline-success">
+            <i class="bi bi-download me-1"></i>导出 CSV
+        </a>
+        <button class="btn btn-primary" onclick="openSidebar()">
+            <i class="bi bi-plus-lg me-1"></i>记录交易
+        </button>
+    </div>
+</div>
+
+<!-- 统计卡片 -->
+<div class="row g-3 mb-4" id="statsRow">
+    <div class="col-6 col-md-3">
+        <div class="card stat-card blue h-100">
+            <div class="card-body">
+                <div class="text-muted small">总交易数</div>
+                <div class="fs-4 fw-bold" id="statTotal">—</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card green h-100">
+            <div class="card-body">
+                <div class="text-muted small">平均风险分</div>
+                <div class="fs-4 fw-bold" id="statAvgRisk">—</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card red h-100">
+            <div class="card-body">
+                <div class="text-muted small">高风险交易</div>
+                <div class="fs-4 fw-bold" id="statHighRisk">—</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card orange h-100">
+            <div class="card-body">
+                <div class="text-muted small">最常见违规</div>
+                <div class="fs-5 fw-bold text-truncate" id="statTopViolation">—</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 常见违规 Top5 -->
+<div class="card mb-4 d-none" id="violationCard">
+    <div class="card-header"><i class="bi bi-exclamation-triangle me-1 text-warning"></i>常见违规 Top5</div>
+    <div class="card-body py-2" id="violationList"></div>
+</div>
+
+<!-- 交易列表 -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list-ul me-1"></i>交易记录</span>
+        <div class="d-flex gap-2">
+            <input type="text" id="filterSymbol" class="form-control form-control-sm" placeholder="按代码过滤" style="width:130px" oninput="filterTrades()">
+            <select id="filterAction" class="form-select form-select-sm" style="width:100px" onchange="filterTrades()">
+                <option value="">全部</option>
+                <option value="buy">买入</option>
+                <option value="sell">卖出</option>
+            </select>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        <div id="emptyState" class="text-center py-5 text-muted">
+            <i class="bi bi-journal-x fs-1"></i>
+            <p class="mt-2">还没有交易记录，点击「记录交易」开始吧</p>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0" id="tradeTable">
+                <thead class="table-light">
+                    <tr>
+                        <th>日期</th>
+                        <th>代码</th>
+                        <th>操作</th>
+                        <th>价格</th>
+                        <th>数量</th>
+                        <th>风险分</th>
+                        <th>主要违规</th>
+                        <th style="width:80px">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="tradeTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 详情模态框 -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="detailTitle">交易详情</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="detailBody"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 侧边栏：记录交易 -->
+<div class="sidebar-overlay" id="overlay" onclick="closeSidebar()"></div>
+<div class="sidebar-panel" id="sidebarPanel">
+    <div class="d-flex justify-content-between align-items-center p-3 border-bottom">
+        <h6 class="mb-0"><i class="bi bi-plus-circle me-2 text-primary"></i>记录一笔交易</h6>
+        <button class="btn btn-sm btn-light" onclick="closeSidebar()"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="sidebar-body">
+        <form id="tradeForm">
+            <div class="mb-3">
+                <label class="form-label fw-semibold">股票代码 <span class="text-danger">*</span></label>
+                <input type="text" class="form-control text-uppercase" id="f_symbol" placeholder="如 AAPL" required>
+            </div>
+            <div class="row mb-3">
+                <div class="col">
+                    <label class="form-label fw-semibold">操作 <span class="text-danger">*</span></label>
+                    <div class="btn-group w-100" role="group">
+                        <input type="radio" class="btn-check" name="action" id="actionBuy" value="buy" checked>
+                        <label class="btn btn-outline-success" for="actionBuy"><i class="bi bi-arrow-up-circle me-1"></i>买入</label>
+                        <input type="radio" class="btn-check" name="action" id="actionSell" value="sell">
+                        <label class="btn btn-outline-danger" for="actionSell"><i class="bi bi-arrow-down-circle me-1"></i>卖出</label>
+                    </div>
+                </div>
+            </div>
+            <div class="row g-2 mb-3">
+                <div class="col">
+                    <label class="form-label fw-semibold">成交价格 <span class="text-danger">*</span></label>
+                    <div class="input-group">
+                        <span class="input-group-text">$</span>
+                        <input type="number" class="form-control" id="f_price" step="0.01" min="0.01" placeholder="0.00" required>
+                    </div>
+                </div>
+                <div class="col">
+                    <label class="form-label fw-semibold">数量（股）<span class="text-danger">*</span></label>
+                    <input type="number" class="form-control" id="f_quantity" step="1" min="1" placeholder="100" required>
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">交易日期 <span class="text-danger">*</span></label>
+                <input type="date" class="form-control" id="f_trade_date" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">我为什么做这笔交易？</label>
+                <textarea class="form-control" id="f_reason" rows="4"
+                    placeholder="用自己的话描述交易理由，例如：这家公司ROE连续5年超过20%，估值被市场低估，趁回调加仓..."></textarea>
+                <div class="form-text">AI 将根据你的理由和基本面数据，分析是否存在情绪化或违规行为。</div>
+            </div>
+            <div id="aiAnalysisResult" class="d-none">
+                <hr>
+                <div class="d-flex align-items-center mb-2">
+                    <i class="bi bi-robot me-2 text-primary fs-5"></i>
+                    <strong>AI 风险分析</strong>
+                    <span id="riskBadgeInline" class="ms-auto risk-badge"></span>
+                </div>
+                <div id="analysisText" class="text-muted small mb-2" style="white-space:pre-wrap"></div>
+                <div id="violationsInline" class="mb-2"></div>
+                <div id="suggestionsBox" class="d-none alert alert-info py-2 px-3 small"></div>
+            </div>
+        </form>
+    </div>
+    <div class="p-3 border-top">
+        <button class="btn btn-primary w-100" id="submitBtn" onclick="submitTrade()">
+            <i class="bi bi-send me-1"></i>提交并分析
+        </button>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// ── State ──────────────────────────────────────────────────────
+let allTrades = [];
+let detailModal;
+
+document.addEventListener('DOMContentLoaded', () => {
+    detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
+    // Default date to today
+    document.getElementById('f_trade_date').value = new Date().toISOString().slice(0, 10);
+    loadTrades();
+    loadStats();
+});
+
+// ── Sidebar ────────────────────────────────────────────────────
+function openSidebar() {
+    document.getElementById('sidebarPanel').classList.add('open');
+    document.getElementById('overlay').classList.add('show');
+}
+function closeSidebar() {
+    document.getElementById('sidebarPanel').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+}
+
+// ── Load trades ────────────────────────────────────────────────
+async function loadTrades() {
+    try {
+        const res = await fetch('/api/trades?limit=200');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        allTrades = data.trades;
+        renderTrades(allTrades);
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function renderTrades(trades) {
+    const tbody = document.getElementById('tradeTableBody');
+    const emptyState = document.getElementById('emptyState');
+    if (trades.length === 0) {
+        tbody.innerHTML = '';
+        emptyState.style.display = 'block';
+        return;
+    }
+    emptyState.style.display = 'none';
+    tbody.innerHTML = trades.map(t => {
+        const risk = t.risk_score;
+        const riskClass = risk >= 70 ? 'risk-high' : risk >= 40 ? 'risk-medium' : 'risk-low';
+        const riskLabel = risk != null ? risk : '—';
+        const violations = (t.violations || []);
+        const mainVio = violations.length > 0 ? `<span class="violation-tag">${violations[0]}</span>${violations.length > 1 ? `<span class="text-muted small"> +${violations.length-1}</span>` : ''}` : '<span class="text-muted small">—</span>';
+        const actionBadge = t.action === 'buy'
+            ? '<span class="badge bg-success-subtle text-success border border-success-subtle">买入</span>'
+            : '<span class="badge bg-danger-subtle text-danger border border-danger-subtle">卖出</span>';
+        return `<tr class="trade-row" onclick="showDetail(${t.id})">
+            <td class="text-nowrap">${t.trade_date || '—'}</td>
+            <td class="fw-semibold">${t.symbol}</td>
+            <td>${actionBadge}</td>
+            <td>$${(t.price || 0).toFixed(2)}</td>
+            <td>${t.quantity}</td>
+            <td>
+                ${risk != null ? `<span class="risk-badge ${riskClass}" style="font-size:.85rem;padding:.25em .6em">${riskLabel}</span>` : '<span class="text-muted">—</span>'}
+            </td>
+            <td>${mainVio}</td>
+            <td>
+                <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); deleteTrade(${t.id})">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function filterTrades() {
+    const sym = document.getElementById('filterSymbol').value.toUpperCase().trim();
+    const action = document.getElementById('filterAction').value;
+    let filtered = allTrades;
+    if (sym) filtered = filtered.filter(t => t.symbol.includes(sym));
+    if (action) filtered = filtered.filter(t => t.action === action);
+    renderTrades(filtered);
+}
+
+// ── Stats ──────────────────────────────────────────────────────
+async function loadStats() {
+    try {
+        const res = await fetch('/api/trades/stats');
+        const data = await res.json();
+        if (!data.success) return;
+        const s = data.stats;
+        document.getElementById('statTotal').textContent = s.total || 0;
+        document.getElementById('statAvgRisk').textContent = s.avg_risk_score != null ? s.avg_risk_score : '—';
+        document.getElementById('statHighRisk').textContent = s.high_risk_count != null
+            ? `${s.high_risk_count} (${s.high_risk_pct}%)`
+            : '—';
+        if (s.top_violations && s.top_violations.length > 0) {
+            const topVioEl = document.getElementById('statTopViolation');
+            if (topVioEl) topVioEl.textContent = s.top_violations[0].name;
+            // render top5 bar chart
+            const card = document.getElementById('violationCard');
+            if (card) card.classList.remove('d-none');
+            const violationList = document.getElementById('violationList');
+            if (violationList) violationList.innerHTML = s.top_violations.map(v => {
+                const pct = Math.min(100, v.count * 20); // visual width
+                return `<div class="d-flex align-items-center mb-2 gap-2">
+                    <div style="width:160px;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${v.name}</div>
+                    <div class="flex-grow-1 risk-bar-wrap">
+                        <div class="risk-bar bg-warning" style="width:${pct}%"></div>
+                    </div>
+                    <div class="text-muted small" style="width:30px;text-align:right">${v.count}</div>
+                </div>`;
+            }).join('');
+        } else {
+            const topVioEl = document.getElementById('statTopViolation');
+            if (topVioEl) topVioEl.textContent = '—';
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+// ── Submit trade ───────────────────────────────────────────────
+async function submitTrade() {
+    const symbol = document.getElementById('f_symbol').value.trim().toUpperCase();
+    const action = document.querySelector('input[name="action"]:checked').value;
+    const price = parseFloat(document.getElementById('f_price').value);
+    const quantity = parseFloat(document.getElementById('f_quantity').value);
+    const trade_date = document.getElementById('f_trade_date').value;
+    const reason_text = document.getElementById('f_reason').value.trim();
+
+    if (!symbol || !price || !quantity || !trade_date) {
+        alert('请填写所有必填字段');
+        return;
+    }
+
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>AI 分析中...';
+
+    try {
+        const res = await fetch('/api/trades', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol, action, price, quantity, trade_date, reason_text })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || '提交失败');
+
+        const trade = data.trade;
+        // show AI result inline
+        showInlineResult(trade);
+
+        // refresh table & stats
+        await loadTrades();
+        await loadStats();
+
+        // reset form (but keep panel open so user sees result)
+        document.getElementById('f_symbol').value = '';
+        document.getElementById('f_price').value = '';
+        document.getElementById('f_quantity').value = '';
+        document.getElementById('f_reason').value = '';
+
+    } catch (e) {
+        console.error('submitTrade error:', e);
+        alert('提交失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-send me-1"></i>提交并分析';
+    }
+}
+
+function showInlineResult(trade) {
+    const box = document.getElementById('aiAnalysisResult');
+    if (!box) return;
+    box.classList.remove('d-none');
+
+    const risk = trade.risk_score;
+    const badge = document.getElementById('riskBadgeInline');
+    if (badge) {
+        if (risk != null) {
+            badge.textContent = `风险 ${risk}/100`;
+            badge.className = 'ms-auto risk-badge ' + (risk >= 70 ? 'risk-high' : risk >= 40 ? 'risk-medium' : 'risk-low');
+        } else {
+            badge.className = 'ms-auto risk-badge d-none';
+        }
+    }
+
+    const analysisText = document.getElementById('analysisText');
+    if (analysisText) analysisText.textContent = trade.ai_analysis || '';
+
+    const violations = trade.violations || [];
+    const violationsInline = document.getElementById('violationsInline');
+    if (violationsInline) {
+        violationsInline.innerHTML = violations.length
+            ? violations.map(v => `<span class="violation-tag">${v}</span>`).join(' ')
+            : '';
+    }
+
+    const sugBox = document.getElementById('suggestionsBox');
+    if (sugBox) {
+        if (trade.suggestions) {
+            sugBox.classList.remove('d-none');
+            sugBox.textContent = '💡 ' + trade.suggestions;
+        } else {
+            sugBox.classList.add('d-none');
+        }
+    }
+}
+
+// ── Detail modal ───────────────────────────────────────────────
+async function showDetail(tradeId) {
+    try {
+        const res = await fetch(`/api/trades/${tradeId}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        const t = data.trade;
+
+        const risk = t.risk_score;
+        const riskClass = risk >= 70 ? 'risk-high' : risk >= 40 ? 'risk-medium' : 'risk-low';
+        const actionLabel = t.action === 'buy' ? '买入' : '卖出';
+        const totalValue = (t.price * t.quantity).toFixed(2);
+
+        document.getElementById('detailTitle').textContent =
+            `${t.symbol} ${actionLabel} — ${t.trade_date}`;
+
+        document.getElementById('detailBody').innerHTML = `
+            <div class="row g-3 mb-3">
+                <div class="col-6 col-md-3 text-center">
+                    <div class="text-muted small">操作</div>
+                    <div class="fw-bold fs-5">${actionLabel}</div>
+                </div>
+                <div class="col-6 col-md-3 text-center">
+                    <div class="text-muted small">价格</div>
+                    <div class="fw-bold fs-5">$${(t.price||0).toFixed(2)}</div>
+                </div>
+                <div class="col-6 col-md-3 text-center">
+                    <div class="text-muted small">数量</div>
+                    <div class="fw-bold fs-5">${t.quantity}</div>
+                </div>
+                <div class="col-6 col-md-3 text-center">
+                    <div class="text-muted small">总金额</div>
+                    <div class="fw-bold fs-5">$${totalValue}</div>
+                </div>
+            </div>
+            ${t.pe_at_trade || t.pb_at_trade || t.market_cap_at_trade ? `
+            <div class="bg-light rounded p-2 mb-3 d-flex gap-4 flex-wrap small">
+                ${t.pe_at_trade ? `<span><b>交易时PE：</b>${t.pe_at_trade.toFixed(1)}</span>` : ''}
+                ${t.pb_at_trade ? `<span><b>PB：</b>${t.pb_at_trade.toFixed(2)}</span>` : ''}
+                ${t.market_cap_at_trade ? `<span><b>市值：</b>$${(t.market_cap_at_trade/1e9).toFixed(1)}B</span>` : ''}
+            </div>` : ''}
+            ${t.reason_text ? `
+            <div class="mb-3">
+                <div class="text-muted small mb-1"><i class="bi bi-chat-left-text me-1"></i>我的交易理由</div>
+                <div class="border rounded p-2 small" style="white-space:pre-wrap">${t.reason_text}</div>
+            </div>` : ''}
+            <hr>
+            <div class="d-flex align-items-center mb-2">
+                <i class="bi bi-robot me-2 text-primary"></i>
+                <strong>AI 风险分析</strong>
+                ${risk != null ? `<span class="ms-auto risk-badge ${riskClass}" style="font-size:.9rem">${risk}/100</span>` : ''}
+            </div>
+            ${risk != null ? `
+            <div class="risk-bar-wrap mb-3" style="height:10px">
+                <div class="risk-bar ${riskClass === 'risk-high' ? 'bg-danger' : riskClass === 'risk-medium' ? 'bg-warning' : 'bg-success'}" style="width:${risk}%"></div>
+            </div>` : ''}
+            ${t.violations && t.violations.length ? `
+            <div class="mb-2">
+                <div class="text-muted small mb-1">检测到违规行为</div>
+                ${t.violations.map(v => `<span class="violation-tag">${v}</span>`).join('')}
+            </div>` : ''}
+            ${t.ai_analysis ? `
+            <div class="mb-3">
+                <div class="text-muted small mb-1">综合分析</div>
+                <div class="small" style="white-space:pre-wrap">${t.ai_analysis}</div>
+            </div>` : ''}
+            ${t.suggestions ? `
+            <div class="alert alert-info py-2 px-3 small mb-0">
+                <i class="bi bi-lightbulb me-1"></i><strong>改进建议：</strong>${t.suggestions}
+            </div>` : ''}
+        `;
+
+        detailModal.show();
+    } catch (e) {
+        alert('加载详情失败：' + e.message);
+    }
+}
+
+// ── Delete ─────────────────────────────────────────────────────
+async function deleteTrade(tradeId) {
+    if (!confirm('确定删除此交易记录？')) return;
+    try {
+        const res = await fetch(`/api/trades/${tradeId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        await loadTrades();
+        await loadStats();
+    } catch (e) {
+        alert('删除失败：' + e.message);
+    }
+}
+</script>
+{% endblock %}
