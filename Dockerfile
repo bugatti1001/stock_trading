@@ -15,13 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY backend/ .
 
-# Create non-root user and directories
-RUN groupadd -r appuser && useradd -r -g appuser appuser \
-    && mkdir -p /app/data /app/logs \
-    && chown -R appuser:appuser /app
-
-# Switch to non-root user
-USER appuser
+# Create data and logs directories
+RUN mkdir -p /app/data /app/logs
 
 # Expose port
 EXPOSE 8000
