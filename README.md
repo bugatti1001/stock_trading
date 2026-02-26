@@ -139,11 +139,8 @@ python run.py
 
 ### 详细文档
 
-- 📘 **[快速入门指南](GETTING_STARTED.md)** - 新用户必读
-- 📗 **[股票筛选指南](SCREENING_GUIDE.md)** - 5种筛选策略详解
-- 📙 **[Web界面指南](WEB_INTERFACE_GUIDE.md)** - 界面功能说明
-- 📕 **[新闻采集指南](NEWS_COLLECTION_GUIDE.md)** - 定时任务和新闻采集
-- 📓 **[快速参考](QUICK_REFERENCE.md)** - 常用命令速查
+- 📘 **[用户指南](docs/USER_GUIDE.md)** - 完整使用手册
+- 📗 **[部署指南](DEPLOY.md)** - 云服务器部署
 
 ## 🌐 API端点
 
