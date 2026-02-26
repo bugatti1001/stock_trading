@@ -1,11 +1,13 @@
 import csv
 import io
+import json
 import logging
 from datetime import date
 from flask import Blueprint, request, Response
 from app.config.database import db_session
 from app.models.stock import Stock
-from app.models.financial_data import FinancialData
+from app.models.financial_data import FinancialData, ReportPeriod
+from app.models.annual_report import AnnualReport
 from app.services.stock_service import StockService
 from app.services.kpi_calculator import compute_single_period_kpis
 from app.utils.response import success_response, error_response, paginated_response
@@ -421,33 +423,140 @@ def update_financial_data(symbol: str, fd_id: int) -> tuple[Response, int]:
 
 @bp.route('/export', methods=['GET'])
 def export_stocks() -> Response:
-    """导出股票池为 CSV 文件下载"""
+    """导出股票池为 JSON 文件下载（含财务数据和年报摘要）"""
     try:
         stocks = _get_stock_service().get_all_stocks(in_pool_only=True)
 
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            'symbol', 'name', 'sector', 'industry', 'market_cap',
-            'current_price', 'pe_ratio', 'pb_ratio', 'dividend_yield', 'eps',
-        ])
-        for s in stocks:
-            writer.writerow([
-                s.symbol, s.name or '', s.sector or '', s.industry or '',
-                s.market_cap or '', s.current_price or '',
-                s.pe_ratio or '', s.pb_ratio or '',
-                s.dividend_yield or '', s.eps or '',
-            ])
+        # Fields to exclude from export
+        _internal_fields = {'id', 'stock_id', 'created_at', 'updated_at'}
+        _annual_report_fields = {
+            'fiscal_year', 'report_type', 'filing_date', 'period_end_date',
+            'accession_number', 'filing_url', 'summary', 'key_points',
+        }
+
+        def _serialize_stock(s):
+            data = s.to_dict()
+            for f in _internal_fields:
+                data.pop(f, None)
+
+            # financial_data
+            fd_list = []
+            for fd in sorted(s.financial_data,
+                             key=lambda x: (x.fiscal_year, x.period.value if x.period else ''),
+                             reverse=True):
+                fd_dict = fd.to_dict()  # handles period enum + extended_metrics
+                for f in _internal_fields:
+                    fd_dict.pop(f, None)
+                fd_list.append(fd_dict)
+            data['financial_data'] = fd_list
+
+            # annual_reports (metadata only)
+            ar_list = []
+            for ar in sorted(s.annual_reports,
+                             key=lambda x: x.fiscal_year, reverse=True):
+                ar_dict = {}
+                for f in _annual_report_fields:
+                    v = getattr(ar, f, None)
+                    if hasattr(v, 'isoformat'):
+                        v = v.isoformat()
+                    ar_dict[f] = v
+                ar_list.append(ar_dict)
+            data['annual_reports'] = ar_list
+
+            return data
+
+        export_data = {
+            'export_date': date.today().isoformat(),
+            'version': 1,
+            'stocks': [_serialize_stock(s) for s in stocks],
+        }
 
         today = date.today().strftime('%Y%m%d')
-        csv_bytes = output.getvalue().encode('utf-8-sig')
+        json_bytes = json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8')
         return Response(
-            csv_bytes,
-            mimetype='text/csv',
-            headers={'Content-Disposition': f'attachment; filename=stock_pool_{today}.csv'},
+            json_bytes,
+            mimetype='application/json',
+            headers={'Content-Disposition': f'attachment; filename=stock_pool_{today}.json'},
         )
     except Exception as e:
         logger.error(f"export_stocks 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/import', methods=['POST'])
+def import_stocks() -> Response:
+    """导入 JSON 文件替换当前股票池"""
+    try:
+        f = request.files.get('file')
+        if not f:
+            return error_response('未上传文件', 400)
+        if not f.filename.endswith('.json'):
+            return error_response('仅支持 JSON 文件', 400)
+
+        try:
+            data = json.loads(f.read().decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return error_response(f'JSON 解析失败: {e}', 400)
+
+        stocks_data = data.get('stocks')
+        if not isinstance(stocks_data, list):
+            return error_response('JSON 格式错误：缺少 stocks 数组', 400)
+
+        # Replace mode: delete all in-pool stocks and their related data
+        old_stocks = db_session.query(Stock).filter(Stock.in_pool.is_(True)).all()
+        for s in old_stocks:
+            db_session.query(FinancialData).filter(FinancialData.stock_id == s.id).delete()
+            db_session.query(AnnualReport).filter(AnnualReport.stock_id == s.id).delete()
+            db_session.delete(s)
+        db_session.flush()
+
+        # Import each stock
+        _stock_fields = {c.name for c in Stock.__table__.columns} - {'id', 'created_at', 'updated_at'}
+        _fd_fields = {c.name for c in FinancialData.__table__.columns} - {'id', 'stock_id', 'created_at', 'updated_at'}
+        _ar_fields = {
+            'fiscal_year', 'report_type', 'filing_date', 'period_end_date',
+            'accession_number', 'filing_url', 'summary', 'key_points',
+        }
+
+        imported_count = 0
+        for sd in stocks_data:
+            # Create Stock
+            stock_kwargs = {k: sd[k] for k in _stock_fields if k in sd}
+            stock = Stock(**stock_kwargs)
+            db_session.add(stock)
+            db_session.flush()  # get stock.id
+
+            # Create FinancialData
+            for fd_data in sd.get('financial_data', []):
+                fd_kwargs = {}
+                for k in _fd_fields:
+                    if k not in fd_data:
+                        continue
+                    v = fd_data[k]
+                    if k == 'period' and v is not None:
+                        v = ReportPeriod(v)
+                    elif k == 'extended_metrics' and isinstance(v, dict):
+                        v = json.dumps(v, ensure_ascii=False)
+                    fd_kwargs[k] = v
+                fd_kwargs['stock_id'] = stock.id
+                db_session.add(FinancialData(**fd_kwargs))
+
+            # Create AnnualReport
+            for ar_data in sd.get('annual_reports', []):
+                ar_kwargs = {k: ar_data[k] for k in _ar_fields if k in ar_data}
+                ar_kwargs['stock_id'] = stock.id
+                db_session.add(AnnualReport(**ar_kwargs))
+
+            imported_count += 1
+
+        db_session.commit()
+        return success_response(
+            data={'imported': imported_count},
+            message=f'成功导入 {imported_count} 只股票',
+        )
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"import_stocks 错误: {e}", exc_info=True)
         return error_response(str(e), 500)
 
 

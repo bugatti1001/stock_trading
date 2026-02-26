@@ -44,8 +44,12 @@
     </div>
     <div class="col-md-4 text-end">
         <a href="/api/stocks/export" class="btn btn-outline-success">
-            <i class="bi bi-download"></i> 导出 CSV
+            <i class="bi bi-download"></i> 导出 JSON
         </a>
+        <input type="file" accept=".json" id="importFile" style="display:none" onchange="importStocks(event)">
+        <button class="btn btn-outline-primary" onclick="document.getElementById('importFile').click()">
+            <i class="bi bi-upload"></i> 导入 JSON
+        </button>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addStockModal">
             <i class="bi bi-plus-circle"></i> 添加股票
         </button>
@@ -1165,6 +1169,41 @@ function startEdit(el) {
     });
     // 失焦保存
     input.addEventListener('blur', () => setTimeout(commit, 100));
+}
+
+/* ========== 导入股票池 JSON ========== */
+async function importStocks(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    if (!file.name.endsWith('.json')) {
+        alert('请选择 .json 文件');
+        event.target.value = '';
+        return;
+    }
+
+    if (!confirm('导入将替换当前股票池中的所有股票及其财务数据和年报，确定继续？')) {
+        event.target.value = '';
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch('/api/stocks/import', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.success) {
+            alert(`导入成功：共 ${data.data.imported} 只股票`);
+            location.reload();
+        } else {
+            alert(`导入失败: ${data.error}`);
+        }
+    } catch (e) {
+        alert(`导入出错: ${e.message}`);
+    } finally {
+        event.target.value = '';
+    }
 }
 </script>
 {% endblock %}
