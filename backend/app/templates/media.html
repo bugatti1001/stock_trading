@@ -46,6 +46,19 @@
 
     /* Column scroll */
     .scroll-col { max-height: 80vh; overflow-y: auto; }
+
+    /* Stock picker */
+    .stock-picker-chip {
+        cursor: pointer; border: 1px solid #dee2e6; transition: all 0.2s;
+        user-select: none; font-size: 0.8rem; padding: 0.25em 0.6em;
+    }
+    .stock-picker-chip.selected {
+        background: #0d6efd !important; color: #fff !important; border-color: #0d6efd;
+    }
+    .stock-picker-chip:hover { border-color: #0d6efd; }
+    .stock-picker-container {
+        max-height: 120px; overflow-y: auto; padding: 0.5rem;
+    }
 </style>
 {% endblock %}
 
@@ -57,8 +70,8 @@
         <a href="/api/media/analyses/export" class="btn btn-outline-success btn-sm">
             <i class="bi bi-download me-1"></i>导出分析
         </a>
-        <button class="btn btn-outline-primary btn-sm" id="refreshBtn" onclick="refreshNews()">
-            <i class="bi bi-arrow-clockwise me-1"></i>刷新新闻
+        <button class="btn btn-outline-primary btn-sm" id="refreshBtn" onclick="fetchSelectedNews()" disabled>
+            <i class="bi bi-search me-1"></i>获取新闻
         </button>
         <button class="btn btn-primary btn-sm" id="analyzeBtn" onclick="analyzeNews()" disabled>
             <i class="bi bi-robot me-1"></i>分析新闻
@@ -69,7 +82,21 @@
 <!-- Status bar -->
 <div class="alert alert-info d-flex align-items-center mb-3 py-2" id="statusBar">
     <div class="spinner-border spinner-border-sm me-2" id="statusSpinner"></div>
-    <span id="statusText">正在获取新闻...</span>
+    <span id="statusText">正在加载股票列表...</span>
+</div>
+
+<!-- Stock Picker -->
+<div class="card mb-3" id="stockPickerPanel">
+    <div class="card-header d-flex justify-content-between align-items-center py-2">
+        <span><i class="bi bi-check2-square me-1"></i>选择股票 <span id="selectedCount" class="badge bg-primary">0</span></span>
+        <div class="d-flex gap-1">
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" onclick="toggleAllNewsPicker(true)">全选</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" onclick="toggleAllNewsPicker(false)">全不选</button>
+        </div>
+    </div>
+    <div class="stock-picker-container d-flex gap-1 flex-wrap" id="stockPickerChips">
+        <span class="text-muted small">加载中...</span>
+    </div>
 </div>
 
 <!-- Two-column layout -->
@@ -88,10 +115,9 @@
                 <!-- Actual news feed -->
                 <div id="newsFeed" class="d-none"></div>
                 <!-- Empty state -->
-                <div id="newsEmpty" class="text-center py-5 text-muted d-none">
+                <div id="newsEmpty" class="text-center py-5 text-muted">
                     <i class="bi bi-newspaper fs-1"></i>
-                    <p class="mt-2">暂无新闻数据。</p>
-                    <p class="small">请确认已配置 <code>FINNHUB_API_KEY</code>，并且股票池中有股票</p>
+                    <p class="mt-2">请先选择股票，然后点击「获取新闻」</p>
                 </div>
             </div>
         </div>
@@ -148,17 +174,21 @@
 {% endblock %}
 
 {% block extra_js %}
-<!-- marked.js for Markdown rendering -->
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<!-- marked.js: async load so it doesn't block page init -->
+<script async src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" onload="marked.setOptions({gfm:true,breaks:true})"></script>
 <script>
-// Configure marked (same as agent_chat.html)
-marked.setOptions({ gfm: true, breaks: true });
+// Fallback: if marked hasn't loaded yet, provide a no-op
+if (typeof marked === 'undefined') {
+    window.marked = { parse: function(s) { return s || ''; }, setOptions: function() {} };
+}
 
 // ── State ──────────────────────────────────────────
+let allStocks = [];          // [{symbol, name}, ...] from /api/stocks
+let selectedSymbols = new Set();
 let cachedNewsBySymbol = {};
-let cachedStockNames = {};  // { symbol: name }
+let cachedStockNames = {};   // { symbol: name }
 let cachedAnalyses = [];
-let activeFilter = null;  // null = show all (news)
+let activeFilter = null;     // null = show all (news)
 let activeAnalysisFilter = null;  // null = show all (analysis)
 
 // Helper: display name for a symbol (name or symbol fallback)
@@ -166,27 +196,88 @@ function stockLabel(symbol) {
     return cachedStockNames[symbol] || symbol;
 }
 
-// ── Init ───────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
-    loadExistingAnalyses();
-    refreshNews();
-});
+// ── Init (run immediately, DOM is already ready at page bottom) ──
+loadExistingAnalyses();
+loadStockList();
 
-// ── Fetch News ─────────────────────────────────────
-async function refreshNews() {
-    showStatus('正在获取新闻...', true);
+// ── Load Stock List ────────────────────────────────
+async function loadStockList() {
+    showStatus('正在加载股票列表...', true);
+    try {
+        const res = await fetch('/api/stocks');
+        const data = await res.json();
+        allStocks = data.data || [];
+
+        // Build name lookup
+        allStocks.forEach(s => { cachedStockNames[s.symbol] = s.name || s.symbol; });
+
+        renderStockPickerChips();
+        updateSelectedCount();
+        showStatus(`已加载 ${allStocks.length} 只股票，请勾选后点击「获取新闻」`, false);
+    } catch (e) {
+        console.error('loadStockList error:', e);
+        showStatus('加载股票列表失败: ' + e.message, false);
+    }
+}
+
+// ── Stock Picker Chips ─────────────────────────────
+function renderStockPickerChips() {
+    const container = document.getElementById('stockPickerChips');
+    container.innerHTML = allStocks.map(s => {
+        const sel = selectedSymbols.has(s.symbol) ? 'selected' : '';
+        const label = s.name || s.symbol;
+        return `<span class="badge stock-picker-chip bg-light text-dark rounded-pill ${sel}"
+                      onclick="toggleNewsPickerStock('${escHtml(s.symbol)}')">${escHtml(label)}</span>`;
+    }).join('');
+}
+
+function toggleNewsPickerStock(symbol) {
+    if (selectedSymbols.has(symbol)) {
+        selectedSymbols.delete(symbol);
+    } else {
+        selectedSymbols.add(symbol);
+    }
+    renderStockPickerChips();
+    updateSelectedCount();
+}
+
+function toggleAllNewsPicker(selectAll) {
+    if (selectAll) {
+        allStocks.forEach(s => selectedSymbols.add(s.symbol));
+    } else {
+        selectedSymbols.clear();
+    }
+    renderStockPickerChips();
+    updateSelectedCount();
+}
+
+function updateSelectedCount() {
+    document.getElementById('selectedCount').textContent = selectedSymbols.size;
+    document.getElementById('refreshBtn').disabled = selectedSymbols.size === 0;
+}
+
+// ── Fetch News (selected stocks only) ──────────────
+async function fetchSelectedNews() {
+    if (selectedSymbols.size === 0) {
+        showStatus('请先选择至少一只股票', false);
+        return;
+    }
+
+    showStatus(`正在获取 ${selectedSymbols.size} 只股票的新闻...`, true);
     const btn = document.getElementById('refreshBtn');
     btn.disabled = true;
     document.getElementById('analyzeBtn').disabled = true;
     showSkeletons();
 
+    const symbolsParam = Array.from(selectedSymbols).join(',');
+
     try {
-        const res = await fetch('/api/media/news');
+        const res = await fetch(`/api/media/news?symbols=${encodeURIComponent(symbolsParam)}`);
         const data = await res.json();
         if (!data.success) throw new Error(data.error);
 
         cachedNewsBySymbol = data.news || {};
-        cachedStockNames = data.stock_names || {};
+        Object.assign(cachedStockNames, data.stock_names || {});
         const total = data.total || 0;
 
         renderStockFilters(cachedNewsBySymbol);
@@ -200,11 +291,12 @@ async function refreshNews() {
             showStatus('未获取到新闻，请检查 API 配置或稍后重试', false);
         }
     } catch (e) {
-        console.error('refreshNews error:', e);
+        console.error('fetchSelectedNews error:', e);
         showStatus('获取新闻失败: ' + e.message, false);
         showNewsEmpty();
     } finally {
         btn.disabled = false;
+        updateSelectedCount();
     }
 }
 
@@ -319,33 +411,35 @@ function updatePickerCount() {
 }
 
 async function confirmAnalyze() {
-    const selected = Array.from(document.querySelectorAll('.stock-pick-cb:checked')).map(cb => cb.value);
-    if (selected.length === 0) return;
-
-    // Close modal
-    bootstrap.Modal.getInstance(document.getElementById('stockPickerModal')).hide();
-
-    // Build subset — only include stocks that actually have news
-    const subset = {};
-    selected.forEach(s => {
-        if (cachedNewsBySymbol[s] && cachedNewsBySymbol[s].length > 0)
-            subset[s] = cachedNewsBySymbol[s];
-    });
-
-    if (Object.keys(subset).length === 0) {
-        showStatus('所选股票暂无新闻数据，无需分析', false);
-        return;
-    }
-
-    const btn = document.getElementById('analyzeBtn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>AI 分析中...';
-    showStatus(`AI 正在分析 ${Object.keys(subset).length} 只股票的新闻（结合投资原则），请稍候...`, true);
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 150000); // 150s timeout
-
     try {
+        const selected = Array.from(document.querySelectorAll('.stock-pick-cb:checked')).map(cb => cb.value);
+        if (selected.length === 0) return;
+
+        // Close modal safely
+        const modalEl = document.getElementById('stockPickerModal');
+        const modalInst = bootstrap.Modal.getInstance(modalEl);
+        if (modalInst) modalInst.hide();
+        else bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+
+        // Build subset — only include stocks that actually have news
+        const subset = {};
+        selected.forEach(s => {
+            if (cachedNewsBySymbol[s] && cachedNewsBySymbol[s].length > 0)
+                subset[s] = cachedNewsBySymbol[s];
+        });
+        if (Object.keys(subset).length === 0) {
+            showStatus('所选股票暂无新闻数据，无需分析', false);
+            return;
+        }
+
+        const btn = document.getElementById('analyzeBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>AI 分析中...';
+        showStatus(`AI 正在分析 ${Object.keys(subset).length} 只股票的新闻（结合投资原则），请稍候...`, true);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 150000); // 150s timeout
+
         const res = await fetch('/api/media/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -361,14 +455,16 @@ async function confirmAnalyze() {
         const msg = data.message || `分析完成！本次分析 ${data.total_analyzed} 只股票的新闻`;
         showStatus(msg, false);
     } catch (e) {
-        clearTimeout(timeoutId);
-        console.error('analyzeNews error:', e);
+        console.error('confirmAnalyze error:', e);
         const msg = e.name === 'AbortError' ? 'AI 分析超时，请稍后重试' : e.message;
         showStatus('分析失败: ' + msg, false);
         alert('AI 分析失败: ' + msg);
     } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-robot me-1"></i>分析新闻';
+        const btn = document.getElementById('analyzeBtn');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-robot me-1"></i>分析新闻';
+        }
     }
 }
 
@@ -430,7 +526,7 @@ function renderAnalysisCards(analyses) {
     const empty = document.getElementById('analysisEmpty');
     const count = document.getElementById('analysisCount');
 
-    count.textContent = analyses.length;
+    if (count) count.textContent = analyses.length;
 
     if (!analyses || analyses.length === 0) {
         container.classList.add('d-none');
@@ -526,9 +622,12 @@ async function deleteAnalysis(id) {
 
 // ── Helpers ────────────────────────────────────────
 function showStatus(text, loading) {
-    document.getElementById('statusText').textContent = text;
-    document.getElementById('statusSpinner').style.display = loading ? 'inline-block' : 'none';
-    document.getElementById('statusBar').style.display = 'flex';
+    const el = document.getElementById('statusText');
+    const spinner = document.getElementById('statusSpinner');
+    const bar = document.getElementById('statusBar');
+    if (el) el.textContent = text;
+    if (spinner) spinner.style.display = loading ? 'inline-block' : 'none';
+    if (bar) bar.style.display = 'flex';
 }
 
 function showSkeletons() {

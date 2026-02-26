@@ -15,6 +15,7 @@ import json
 import os
 import re
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Optional
 
@@ -304,11 +305,22 @@ def fetch_news_for_stocks(stocks: List[Dict],
         { "AAPL": [news_item, ...], "SH600519": [...], "HK09888": [...] }
     """
     results = {}
-    for stock in stocks:
+
+    def _fetch_one(stock):
         symbol = stock['symbol']
         name = stock.get('name', symbol)
-        news = search_stock_news(symbol, name, days_back, num_per_stock)
-        results[symbol] = news
+        return symbol, search_stock_news(symbol, name, days_back, num_per_stock)
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(_fetch_one, s): s['symbol'] for s in stocks}
+        for future in as_completed(futures, timeout=60):
+            try:
+                symbol, news = future.result()
+                results[symbol] = news or []
+            except Exception as e:
+                symbol = futures[future]
+                logger.warning(f"Failed to fetch news for {symbol}: {e}")
+                results[symbol] = []
 
     total = sum(len(v) for v in results.values())
     logger.info(f"News: total {total} items for {len(stocks)} stocks")

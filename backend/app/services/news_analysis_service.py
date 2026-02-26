@@ -99,7 +99,12 @@ def _analyze_single_stock(symbol: str, stock_name: str,
 
     try:
         import anthropic
-        client = anthropic.Anthropic(api_key=api_key, timeout=90.0)
+        import httpx
+        # 显式设置 connect/read/write 各阶段超时，防止网络半连接导致无限挂起
+        client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=httpx.Timeout(90.0, connect=15.0),
+        )
         msg = client.messages.create(
             model=AI_MODEL,
             max_tokens=2048,
@@ -165,7 +170,9 @@ def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
 
         analysis_results: Dict[str, tuple] = {}  # symbol -> (result_dict, stock_name, news_items)
 
-        with ThreadPoolExecutor(max_workers=min(NEWS_MAX_PARALLEL, len(tasks))) as executor:
+        # 不使用 with 块，避免 executor.shutdown(wait=True) 在线程卡死时永远阻塞
+        executor = ThreadPoolExecutor(max_workers=min(NEWS_MAX_PARALLEL, len(tasks)))
+        try:
             future_to_symbol: Dict = {}
             for symbol, stock_name, news_items in tasks:
                 future = executor.submit(
@@ -188,6 +195,12 @@ def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
             except TimeoutError:
                 pending = [s for f, (s, _, _) in future_to_symbol.items() if not f.done()]
                 logger.error(f"News analysis timed out (120s). Pending: {pending}")
+                # 取消尚未开始的任务
+                for f in future_to_symbol:
+                    f.cancel()
+        finally:
+            # wait=False: 不阻塞等待卡死的线程，让 Flask 能立即返回响应
+            executor.shutdown(wait=False, cancel_futures=True)
 
         # Step 5: 将结果写入数据库（在主线程中操作 db_session）
         created: List[StockNewsAnalysis] = []
