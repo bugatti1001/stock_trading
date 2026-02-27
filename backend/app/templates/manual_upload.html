@@ -1,0 +1,690 @@
+{% extends "base.html" %}
+
+{% block title %}手动上传财务数据 - 股票分析系统{% endblock %}
+
+{% block extra_css %}
+<style>
+/* Upload area */
+.upload-zone {
+    border: 2px dashed #adb5bd;
+    border-radius: 12px;
+    padding: 3rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+}
+.upload-zone:hover, .upload-zone.drag-over {
+    border-color: var(--bs-primary);
+    background: rgba(var(--bs-primary-rgb), .04);
+}
+.upload-zone i { font-size: 3rem; color: #adb5bd; }
+.upload-zone:hover i { color: var(--bs-primary); }
+
+/* Step indicator */
+.step-indicator { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
+.step-item {
+    flex: 1; text-align: center; padding: .5rem;
+    border-bottom: 3px solid #dee2e6; color: #6c757d; font-weight: 600;
+}
+.step-item.active { border-color: var(--bs-primary); color: var(--bs-primary); }
+.step-item.done { border-color: #198754; color: #198754; }
+
+/* Match list */
+.match-item { padding: .5rem .75rem; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: .75rem; }
+.match-item:last-child { border-bottom: none; }
+.match-badge { font-size: .75rem; padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+.match-ok { background: #d1e7dd; color: #0f5132; }
+.match-miss { background: #fff3cd; color: #664d03; }
+.match-skip { background: #e9ecef; color: #6c757d; }
+
+/* Preview table */
+.preview-table { font-size: .82rem; }
+.preview-table th { font-weight: 600; white-space: nowrap; background: #f8f9fa; }
+.preview-table td { white-space: nowrap; }
+.preview-table input {
+    width: 90px; border: 1px solid transparent; background: transparent;
+    text-align: right; font-size: .82rem; padding: 1px 4px;
+}
+.preview-table input:focus {
+    border-color: var(--bs-primary); background: #fff; outline: none; border-radius: 3px;
+}
+
+/* Accordion tweaks */
+.stock-panel .accordion-button { font-weight: 600; font-size: .9rem; padding: .6rem 1rem; }
+.stock-panel .accordion-body { padding: .5rem; overflow-x: auto; }
+
+/* Loading */
+.loading-overlay {
+    position: fixed; inset: 0; background: rgba(255,255,255,.7);
+    display: flex; align-items: center; justify-content: center; z-index: 9999;
+}
+
+/* New stock form */
+.new-stock-form { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.new-stock-form input, .new-stock-form select { font-size: .82rem; padding: 2px 6px; }
+
+/* Search results dropdown */
+.search-results { list-style: none; padding: 0; margin: .25rem 0 0; border: 1px solid #dee2e6; border-radius: 6px; max-height: 200px; overflow-y: auto; background: #fff; }
+.search-results li { padding: .4rem .75rem; cursor: pointer; font-size: .82rem; display: flex; justify-content: space-between; }
+.search-results li:hover { background: rgba(var(--bs-primary-rgb), .08); }
+.search-results li.selected { background: #d1e7dd; }
+.search-results .no-result { color: #6c757d; cursor: default; }
+.search-results .no-result:hover { background: transparent; }
+.search-spinner { width: 1rem; height: 1rem; border-width: 2px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-file-earmark-spreadsheet"></i> 手动上传财务数据</h1>
+        <p class="text-muted mb-0">从 Excel / CSV 文件导入原始财务数据（对齐 Raw 表格式）</p>
+    </div>
+    <div class="col-auto">
+        <a href="/stocks" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> 返回股票池</a>
+    </div>
+</div>
+
+<!-- Step Indicator -->
+<div class="step-indicator" id="stepIndicator">
+    <div class="step-item active" data-step="1"><i class="bi bi-cloud-upload"></i> 上传文件</div>
+    <div class="step-item" data-step="2"><i class="bi bi-link-45deg"></i> 股票匹配</div>
+    <div class="step-item" data-step="3"><i class="bi bi-table"></i> 预览确认</div>
+</div>
+
+<!-- Step 1: Upload -->
+<div id="step1" class="card">
+    <div class="card-body">
+        <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+            <i class="bi bi-cloud-arrow-up"></i>
+            <p class="mt-2 mb-1 fw-semibold">拖拽文件到此处，或点击选择文件</p>
+            <p class="text-muted small mb-0">支持 .xlsx / .csv，对齐 Raw 表格式（A列=股票名称，B列=报告名…）</p>
+        </div>
+        <input type="file" id="fileInput" accept=".xlsx,.csv" style="display:none" onchange="handleFile(event)">
+        <div id="fileInfo" class="mt-3" style="display:none"></div>
+    </div>
+</div>
+
+<!-- Step 2: Match -->
+<div id="step2" class="card" style="display:none">
+    <div class="card-body">
+        <h5 class="card-title mb-3">股票匹配结果</h5>
+        <div class="row">
+            <div class="col-md-6">
+                <h6 class="text-success"><i class="bi bi-check-circle-fill"></i> 已匹配 (<span id="matchedCount">0</span>)</h6>
+                <div id="matchedList" class="border rounded mb-3" style="max-height:300px;overflow-y:auto"></div>
+            </div>
+            <div class="col-md-6">
+                <h6 class="text-warning"><i class="bi bi-exclamation-triangle-fill"></i> 未匹配 (<span id="unmatchedCount">0</span>)</h6>
+                <div id="unmatchedList" class="border rounded mb-3" style="max-height:300px;overflow-y:auto"></div>
+            </div>
+        </div>
+        <div class="d-flex justify-content-between">
+            <button class="btn btn-outline-secondary" onclick="goStep(1)"><i class="bi bi-arrow-left"></i> 重新上传</button>
+            <button class="btn btn-primary" onclick="goStep(3)">下一步 <i class="bi bi-arrow-right"></i></button>
+        </div>
+    </div>
+</div>
+
+<!-- Step 3: Preview & Confirm -->
+<div id="step3" class="card" style="display:none">
+    <div class="card-body">
+        <h5 class="card-title mb-3">数据预览 <small class="text-muted fw-normal">（单位：亿，可编辑）</small></h5>
+        <div class="accordion" id="previewAccordion"></div>
+        <div class="d-flex justify-content-between mt-3">
+            <button class="btn btn-outline-secondary" onclick="goStep(2)"><i class="bi bi-arrow-left"></i> 上一步</button>
+            <button class="btn btn-success btn-lg" onclick="confirmImport()"><i class="bi bi-check2-circle"></i> 确认导入</button>
+        </div>
+    </div>
+</div>
+
+<!-- Loading overlay -->
+<div class="loading-overlay" id="loadingOverlay" style="display:none">
+    <div class="text-center">
+        <div class="spinner-border text-primary" style="width:3rem;height:3rem"></div>
+        <p class="mt-2 fw-semibold" id="loadingText">处理中...</p>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<!-- SheetJS for client-side xlsx parsing -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+<script>
+// ── Column mapping (0-based) ──
+const COLUMN_MAP = {
+    0:  {field: 'stock_name', mult: null},
+    1:  {field: 'report_name', mult: null},
+    2:  {field: 'currency', mult: null},
+    3:  {field: 'shares_outstanding', mult: 1e8},
+    // 4: skip (duplicate)
+    5:  {field: 'nav_per_share', mult: 1},
+    // 6-7: skip (market price / market cap)
+    8:  {field: 'dividends_per_share', mult: 1},
+    // 9-15: skip (derived KPIs)
+    16: {field: 'revenue', mult: 1e8},
+    17: {field: 'cost_of_revenue', mult: 1e8},
+    18: {field: 'operating_income', mult: 1e8},
+    19: {field: 'net_income', mult: 1e8},
+    20: {field: 'net_income_to_parent', mult: 1e8},
+    // 21: skip
+    22: {field: 'adjusted_net_income', mult: 1e8},
+    23: {field: 'selling_expense', mult: 1e8},
+    24: {field: 'admin_expense', mult: 1e8},
+    25: {field: 'rd_expense', mult: 1e8},
+    26: {field: 'finance_cost', mult: 1e8},
+    27: {field: 'cash_and_equivalents', mult: 1e8},
+    28: {field: 'accounts_receivable', mult: 1e8},
+    29: {field: 'inventory', mult: 1e8},
+    30: {field: 'investments', mult: 1e8},
+    31: {field: 'accounts_payable', mult: 1e8},
+    32: {field: 'contract_liability_change_pct', mult: 1},
+    33: {field: 'short_term_borrowings', mult: 1e8},
+    34: {field: 'long_term_borrowings', mult: 1e8},
+    35: {field: 'total_assets', mult: 1e8},
+    36: {field: 'total_equity', mult: 1e8},
+    37: {field: 'non_current_assets', mult: 1e8},
+    38: {field: 'current_liabilities', mult: 1e8},
+    // 39: skip
+    40: {field: 'operating_cash_flow', mult: 1e8},
+    41: {field: 'capital_expenditure', mult: 1e8},
+    // 42+: skip
+};
+
+// Fields displayed in preview (亿 unit) and those displayed as-is
+const DISPLAY_FIELDS_YI = [
+    'revenue', 'cost_of_revenue', 'operating_income', 'net_income',
+    'net_income_to_parent', 'adjusted_net_income',
+    'selling_expense', 'admin_expense', 'rd_expense', 'finance_cost',
+    'cash_and_equivalents', 'accounts_receivable', 'inventory', 'investments',
+    'accounts_payable', 'short_term_borrowings', 'long_term_borrowings',
+    'total_assets', 'total_equity', 'non_current_assets', 'current_liabilities',
+    'operating_cash_flow', 'capital_expenditure',
+];
+const DISPLAY_FIELDS_RAW = ['shares_outstanding', 'nav_per_share', 'dividends_per_share', 'contract_liability_change_pct'];
+
+const FIELD_LABELS = {
+    revenue: '营业收入', cost_of_revenue: '营业成本', operating_income: '营业利润',
+    net_income: '净利润', net_income_to_parent: '归母利润', adjusted_net_income: '扣非利润',
+    selling_expense: '销售费用', admin_expense: '管理费用', rd_expense: '研发费用', finance_cost: '融资成本',
+    cash_and_equivalents: '货币资金', accounts_receivable: '应收账款', inventory: '库存',
+    investments: '投资资产', accounts_payable: '应付账款', contract_liability_change_pct: '合同负债变动%',
+    short_term_borrowings: '短期贷款', long_term_borrowings: '长期贷款',
+    total_assets: '总资产', total_equity: '净资产', non_current_assets: '非流动资产', current_liabilities: '流动负债',
+    operating_cash_flow: '经营现金流', capital_expenditure: '资本开支',
+    shares_outstanding: '总股本(亿股)', nav_per_share: '每股净资产', dividends_per_share: '每股分红',
+};
+
+// ── State ──
+let parsedStocks = []; // [{name, records: [{report_name, fiscal_year, period, report_date, currency, fields:{}}]}]
+let matchResults = []; // from API
+
+// ── Drag & Drop ──
+const zone = document.getElementById('uploadZone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) processFile(e.dataTransfer.files[0]);
+});
+
+function handleFile(e) {
+    if (e.target.files.length) processFile(e.target.files[0]);
+}
+
+// ── Parse report_name → fiscal_year + period + report_date ──
+function parseReportName(rn) {
+    if (!rn) return null;
+    const m = String(rn).match(/(\d{4})(年报|中报|[一二三]季报)/);
+    if (!m) return null;
+    const year = parseInt(m[1]);
+    const type = m[2];
+    let period, month, day;
+    if (type === '年报')     { period = 'Annual'; month = 12; day = 31; }
+    else if (type === '一季报') { period = 'Q1'; month = 3; day = 31; }
+    else if (type === '中报')   { period = 'Q2'; month = 6; day = 30; }
+    else if (type === '三季报') { period = 'Q3'; month = 9; day = 30; }
+    else return null;
+    return {
+        fiscal_year: year,
+        period,
+        report_date: `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`,
+    };
+}
+
+// ── Process uploaded file ──
+function processFile(file) {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['xlsx', 'csv'].includes(ext)) {
+        alert('仅支持 .xlsx 或 .csv 文件');
+        return;
+    }
+
+    showLoading('正在解析文件...');
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const wb = XLSX.read(e.target.result, {type: 'array'});
+            // Use first sheet (or sheet named "Raw")
+            let sheetName = wb.SheetNames.includes('Raw') ? 'Raw' : wb.SheetNames[0];
+            const ws = wb.Sheets[sheetName];
+            const rows = XLSX.utils.sheet_to_json(ws, {header: 1, defval: null});
+
+            parseRows(rows, file.name);
+        } catch (err) {
+            hideLoading();
+            alert('文件解析失败: ' + err.message);
+        }
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+function parseRows(rows, fileName) {
+    // Skip header (row 0) and row 1 (exchange rate row)
+    // Group by stock_name (col 0)
+    const stockMap = {}; // name → [records]
+
+    for (let i = 2; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || !row[0]) continue;
+
+        const stockName = String(row[0]).trim();
+        if (!stockName) continue;
+
+        const reportName = row[1] ? String(row[1]).trim() : null;
+        const parsed = parseReportName(reportName);
+        if (!parsed) continue; // skip unparseable rows
+
+        const currency = row[2] ? String(row[2]).trim() : 'CNY';
+
+        // Extract fields
+        const fields = {};
+        for (const [colStr, mapping] of Object.entries(COLUMN_MAP)) {
+            const col = parseInt(colStr);
+            if (mapping.mult === null) continue; // metadata field
+            const raw = row[col];
+            if (raw !== null && raw !== undefined && raw !== '' && !isNaN(Number(raw))) {
+                fields[mapping.field] = Number(raw) * mapping.mult;
+            }
+        }
+
+        if (!stockMap[stockName]) stockMap[stockName] = [];
+        stockMap[stockName].push({
+            report_name: reportName,
+            fiscal_year: parsed.fiscal_year,
+            period: parsed.period,
+            report_date: parsed.report_date,
+            currency,
+            fields,
+        });
+    }
+
+    parsedStocks = Object.entries(stockMap).map(([name, records]) => ({name, records}));
+
+    document.getElementById('fileInfo').style.display = '';
+    document.getElementById('fileInfo').innerHTML =
+        `<div class="alert alert-info mb-0"><i class="bi bi-check-circle"></i> ` +
+        `已从 <strong>${fileName}</strong> 解析出 <strong>${parsedStocks.length}</strong> 只股票，` +
+        `共 <strong>${parsedStocks.reduce((s, st) => s + st.records.length, 0)}</strong> 条记录</div>`;
+
+    // Send names to match API
+    matchStocks();
+}
+
+async function matchStocks() {
+    showLoading('正在匹配股票...');
+    try {
+        const names = parsedStocks.map(s => s.name);
+        const resp = await fetch('/api/stocks/manual-upload/match', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({names}),
+        });
+        const json = await resp.json();
+        if (!json.success) throw new Error(json.error);
+        matchResults = json.data;
+
+        // Merge match info into parsedStocks
+        for (const stock of parsedStocks) {
+            const m = matchResults.find(r => r.name === stock.name);
+            if (m) {
+                stock.matched = m.matched;
+                stock.stock_id = m.stock_id;
+                stock.symbol = m.symbol;
+                stock.stock_name = m.stock_name;
+                stock.market = m.market;
+            } else {
+                stock.matched = false;
+            }
+            stock.skip = false;
+            stock.create_new = false;
+            stock.new_symbol = '';
+            stock.new_market = 'CN';
+        }
+
+        hideLoading();
+        goStep(2);
+    } catch (err) {
+        hideLoading();
+        alert('匹配失败: ' + err.message);
+    }
+}
+
+// ── Step navigation ──
+function goStep(n) {
+    document.querySelectorAll('#step1,#step2,#step3').forEach(el => el.style.display = 'none');
+    document.getElementById('step' + n).style.display = '';
+
+    document.querySelectorAll('.step-item').forEach(el => {
+        const s = parseInt(el.dataset.step);
+        el.classList.remove('active', 'done');
+        if (s === n) el.classList.add('active');
+        else if (s < n) el.classList.add('done');
+    });
+
+    if (n === 2) renderMatchStep();
+    if (n === 3) renderPreviewStep();
+}
+
+// ── Step 2: Render match results ──
+function renderMatchStep() {
+    const matched = parsedStocks.filter(s => s.matched);
+    const unmatched = parsedStocks.filter(s => !s.matched);
+
+    document.getElementById('matchedCount').textContent = matched.length;
+    document.getElementById('unmatchedCount').textContent = unmatched.length;
+
+    // Matched list
+    document.getElementById('matchedList').innerHTML = matched.length === 0
+        ? '<p class="text-muted p-3 mb-0">无匹配股票</p>'
+        : matched.map(s => `
+            <div class="match-item">
+                <span class="match-badge match-ok">✓</span>
+                <span class="fw-semibold">${esc(s.name)}</span>
+                <span class="text-muted">→</span>
+                <span>${esc(s.symbol)}</span>
+                <span class="text-muted small">(${s.records.length} 条记录)</span>
+            </div>
+        `).join('');
+
+    // Unmatched list
+    if (unmatched.length === 0) {
+        document.getElementById('unmatchedList').innerHTML = '<p class="text-muted p-3 mb-0">全部匹配成功</p>';
+    } else {
+        document.getElementById('unmatchedList').innerHTML = unmatched.map((s, i) => {
+            const idx = parsedStocks.indexOf(s);
+            return `
+            <div class="match-item" id="unmatch-${idx}">
+                <span class="match-badge match-miss" id="badge-${idx}">?</span>
+                <span class="fw-semibold">${esc(s.name)}</span>
+                <span class="text-muted small">(${s.records.length} 条)</span>
+                <div class="ms-auto">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="toggleSkip(${idx})">跳过</button>
+                </div>
+            </div>
+            <div id="searchPanel-${idx}" class="px-3 py-2 bg-light">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <span class="small text-muted">搜索:</span>
+                    <input type="text" class="form-control form-control-sm" style="width:180px"
+                           id="searchInput-${idx}" value="${esc(s.name)}"
+                           oninput="debouncedSearch(${idx})" placeholder="输入名称或代码搜索">
+                    <span id="searchSpinner-${idx}" style="display:none">
+                        <span class="spinner-border search-spinner text-primary"></span>
+                    </span>
+                    <span id="selectedInfo-${idx}" class="small text-success fw-semibold" style="display:none"></span>
+                </div>
+                <ul class="search-results" id="searchResults-${idx}">
+                    <li class="no-result text-muted">输入关键词搜索，或等待自动搜索结果</li>
+                </ul>
+            </div>`;
+        }).join('');
+
+        // Auto-search for all unmatched stocks
+        for (const s of unmatched) {
+            const idx = parsedStocks.indexOf(s);
+            autoSearch(idx);
+        }
+    }
+}
+
+function toggleSkip(idx) {
+    const s = parsedStocks[idx];
+    s.skip = !s.skip;
+    s.create_new = false;
+    s.new_symbol = '';
+    s.new_market = 'CN';
+    const badge = document.getElementById('badge-' + idx);
+    const panel = document.getElementById('searchPanel-' + idx);
+    if (s.skip) {
+        badge.className = 'match-badge match-skip';
+        badge.textContent = '—';
+        panel.style.display = 'none';
+    } else {
+        badge.className = 'match-badge match-miss';
+        badge.textContent = '?';
+        panel.style.display = '';
+    }
+}
+
+// ── Search helpers ──
+const _searchTimers = {};
+
+function debouncedSearch(idx) {
+    clearTimeout(_searchTimers[idx]);
+    _searchTimers[idx] = setTimeout(() => autoSearch(idx), 350);
+}
+
+async function autoSearch(idx) {
+    const input = document.getElementById('searchInput-' + idx);
+    const q = (input ? input.value : parsedStocks[idx].name).trim();
+    if (!q) return;
+
+    const spinner = document.getElementById('searchSpinner-' + idx);
+    const resultsList = document.getElementById('searchResults-' + idx);
+    spinner.style.display = '';
+
+    try {
+        const resp = await fetch(`/api/stocks/search?q=${encodeURIComponent(q)}`);
+        const json = await resp.json();
+        spinner.style.display = 'none';
+
+        if (!json.success || !json.data || json.data.length === 0) {
+            resultsList.innerHTML = '<li class="no-result">未找到结果，可手动输入代码后回车</li>';
+            return;
+        }
+
+        resultsList.innerHTML = json.data.map(r =>
+            `<li onclick="selectSearchResult(${idx}, '${esc(r.symbol)}', '${esc(r.name)}', '${esc(r.market)}')">
+                <span><strong>${esc(r.symbol)}</strong> ${esc(r.name)}</span>
+                <span class="text-muted">${esc(r.market)}</span>
+            </li>`
+        ).join('');
+    } catch (err) {
+        spinner.style.display = 'none';
+        resultsList.innerHTML = '<li class="no-result">搜索失败</li>';
+    }
+}
+
+function selectSearchResult(idx, symbol, name, market) {
+    const s = parsedStocks[idx];
+    s.create_new = true;
+    s.skip = false;
+    s.new_symbol = symbol;
+    s.new_market = market;
+
+    // Update badge
+    const badge = document.getElementById('badge-' + idx);
+    badge.className = 'match-badge match-ok';
+    badge.textContent = '✓';
+
+    // Highlight selected
+    const resultsList = document.getElementById('searchResults-' + idx);
+    resultsList.querySelectorAll('li').forEach(li => li.classList.remove('selected'));
+    // Find and highlight the clicked one
+    for (const li of resultsList.querySelectorAll('li')) {
+        if (li.querySelector('strong') && li.querySelector('strong').textContent === symbol) {
+            li.classList.add('selected');
+            break;
+        }
+    }
+
+    // Show selected info
+    const info = document.getElementById('selectedInfo-' + idx);
+    info.style.display = '';
+    info.textContent = `已选: ${symbol} (${market})`;
+}
+
+// ── Step 3: Render preview ──
+function renderPreviewStep() {
+    const container = document.getElementById('previewAccordion');
+    const activeStocks = parsedStocks.filter(s => (s.matched || s.create_new) && !s.skip);
+
+    if (activeStocks.length === 0) {
+        container.innerHTML = '<p class="text-muted p-3">无可导入的股票，请返回上一步选择</p>';
+        return;
+    }
+
+    // Which fields to display
+    const previewFields = [...DISPLAY_FIELDS_YI, ...DISPLAY_FIELDS_RAW];
+
+    container.innerHTML = activeStocks.map((stock, si) => {
+        const idx = parsedStocks.indexOf(stock);
+        const label = stock.matched ? `${esc(stock.name)} → ${esc(stock.symbol)}` : `${esc(stock.name)} (新建: ${esc(stock.new_symbol || '?')})`;
+        const records = stock.records;
+
+        // Table header
+        let thead = '<tr><th>报告期</th>';
+        for (const f of previewFields) {
+            thead += `<th>${FIELD_LABELS[f] || f}</th>`;
+        }
+        thead += '</tr>';
+
+        // Table body
+        let tbody = '';
+        records.forEach((rec, ri) => {
+            tbody += `<tr><td class="fw-semibold">${esc(rec.report_name || '')}</td>`;
+            for (const f of previewFields) {
+                const raw = rec.fields[f];
+                // Display in 亿 for YI fields, raw for others
+                let displayVal = '';
+                if (raw !== null && raw !== undefined) {
+                    if (DISPLAY_FIELDS_YI.includes(f)) {
+                        displayVal = (raw / 1e8).toFixed(2);
+                    } else {
+                        displayVal = typeof raw === 'number' ? raw.toFixed(2) : raw;
+                    }
+                }
+                tbody += `<td><input type="text" value="${displayVal}" data-stock="${idx}" data-record="${ri}" data-field="${f}" onchange="updateField(this)"></td>`;
+            }
+            tbody += '</tr>';
+        });
+
+        return `
+        <div class="accordion-item stock-panel">
+            <h2 class="accordion-header">
+                <button class="accordion-button ${si > 0 ? 'collapsed' : ''}" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#panel-${idx}">
+                    ${label} <span class="badge bg-secondary ms-2">${records.length} 条</span>
+                </button>
+            </h2>
+            <div id="panel-${idx}" class="accordion-collapse collapse ${si === 0 ? 'show' : ''}" data-bs-parent="#previewAccordion">
+                <div class="accordion-body">
+                    <table class="table table-sm preview-table">
+                        <thead>${thead}</thead>
+                        <tbody>${tbody}</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function updateField(input) {
+    const idx = parseInt(input.dataset.stock);
+    const ri = parseInt(input.dataset.record);
+    const field = input.dataset.field;
+    const val = input.value.trim();
+
+    if (val === '') {
+        parsedStocks[idx].records[ri].fields[field] = null;
+    } else {
+        const num = parseFloat(val);
+        if (isNaN(num)) return;
+        // Convert back from 亿 display to raw
+        if (DISPLAY_FIELDS_YI.includes(field)) {
+            parsedStocks[idx].records[ri].fields[field] = num * 1e8;
+        } else {
+            parsedStocks[idx].records[ri].fields[field] = num;
+        }
+    }
+}
+
+// ── Confirm import ──
+async function confirmImport() {
+    const activeStocks = parsedStocks.filter(s => (s.matched || s.create_new) && !s.skip);
+    if (activeStocks.length === 0) {
+        alert('无可导入的股票');
+        return;
+    }
+
+    // Build payload
+    const payload = activeStocks.map(s => ({
+        stock_id: s.stock_id || null,
+        name: s.name,
+        symbol: s.matched ? s.symbol : s.new_symbol,
+        market: s.matched ? s.market : s.new_market,
+        create_new: !s.matched && s.create_new,
+        records: s.records.map(r => ({
+            report_name: r.report_name,
+            fiscal_year: r.fiscal_year,
+            period: r.period,
+            report_date: r.report_date,
+            currency: r.currency,
+            fields: r.fields,
+        })),
+    }));
+
+    showLoading('正在导入数据...');
+    try {
+        const resp = await fetch('/api/stocks/manual-upload/confirm', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({stocks: payload}),
+        });
+        const json = await resp.json();
+        hideLoading();
+
+        if (!json.success) {
+            alert('导入失败: ' + json.error);
+            return;
+        }
+
+        // Success
+        const d = json.data;
+        const msg = json.message || `导入完成：${d.imported_stocks} 只股票`;
+        document.getElementById('step3').innerHTML = `
+            <div class="card-body text-center py-5">
+                <i class="bi bi-check-circle-fill text-success" style="font-size:4rem"></i>
+                <h4 class="mt-3">导入成功</h4>
+                <p class="text-muted">${esc(msg)}</p>
+                <div class="mt-3">
+                    <a href="/stocks" class="btn btn-primary"><i class="bi bi-collection"></i> 返回股票池</a>
+                    <button class="btn btn-outline-secondary ms-2" onclick="location.reload()">继续上传</button>
+                </div>
+            </div>
+        `;
+    } catch (err) {
+        hideLoading();
+        alert('导入失败: ' + err.message);
+    }
+}
+
+// ── Helpers ──
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function showLoading(text) { document.getElementById('loadingText').textContent = text; document.getElementById('loadingOverlay').style.display = ''; }
+function hideLoading() { document.getElementById('loadingOverlay').style.display = 'none'; }
+</script>
+{% endblock %}

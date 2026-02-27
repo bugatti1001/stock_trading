@@ -625,3 +625,169 @@ def export_financials(symbol: str) -> Response:
     except Exception as e:
         logger.error(f"export_financials 错误: {e}")
         return error_response(str(e), 500)
+
+
+# ── Manual Upload ──────────────────────────────────────────────
+
+
+@bp.route('/manual-upload/match', methods=['POST'])
+def manual_upload_match() -> tuple[Response, int]:
+    """接收股票名称列表，返回匹配结果"""
+    try:
+        data = request.get_json(silent=True) or {}
+        names = data.get('names', [])
+        if not names:
+            return error_response('请提供股票名称列表', 400)
+
+        results = []
+        for name in names:
+            name = name.strip()
+            if not name:
+                continue
+            # 精确匹配
+            stock = db_session.query(Stock).filter(Stock.name == name).first()
+            # 模糊匹配
+            if not stock:
+                stock = db_session.query(Stock).filter(Stock.name.contains(name)).first()
+            if not stock:
+                # 反向：名称包含在 stock.name 中
+                all_stocks = db_session.query(Stock).all()
+                for s in all_stocks:
+                    if s.name and name in s.name:
+                        stock = s
+                        break
+
+            if stock:
+                results.append({
+                    'name': name,
+                    'matched': True,
+                    'stock_id': stock.id,
+                    'symbol': stock.symbol,
+                    'stock_name': stock.name,
+                    'market': stock.market,
+                })
+            else:
+                results.append({
+                    'name': name,
+                    'matched': False,
+                    'stock_id': None,
+                    'symbol': None,
+                    'stock_name': None,
+                    'market': None,
+                })
+
+        return success_response(data=results, count=len(results))
+    except Exception as e:
+        logger.error(f"manual_upload_match 错误: {e}", exc_info=True)
+        return error_response(str(e), 500)
+
+
+@bp.route('/manual-upload/confirm', methods=['POST'])
+def manual_upload_confirm() -> tuple[Response, int]:
+    """接收确认后的数据，写入数据库（upsert）"""
+    try:
+        data = request.get_json(silent=True) or {}
+        stocks_data = data.get('stocks', [])
+        if not stocks_data:
+            return error_response('无数据可导入', 400)
+
+        from app.services.kpi_calculator import backfill_nav_per_share
+
+        imported = 0
+        created_stocks = 0
+        updated_records = 0
+        created_records = 0
+
+        for item in stocks_data:
+            stock_id = item.get('stock_id')
+
+            # 如果未匹配，需要创建新股票
+            if not stock_id and item.get('create_new'):
+                symbol = item.get('symbol', '').strip()
+                name = item.get('name', '').strip()
+                market = item.get('market', '').strip()
+                if not symbol or not name:
+                    continue
+                # 检查是否已存在
+                existing = db_session.query(Stock).filter(Stock.symbol == symbol.upper()).first()
+                if existing:
+                    stock_id = existing.id
+                else:
+                    currency_map = {'CN': 'CNY', 'HK': 'HKD', 'US': 'USD'}
+                    exchange_map = {'CN': 'SSE', 'HK': 'HKEX', 'US': 'NASDAQ'}
+                    new_stock = Stock(
+                        symbol=symbol.upper(),
+                        name=name,
+                        market=market or 'CN',
+                        currency=currency_map.get(market, 'CNY'),
+                        exchange=exchange_map.get(market, 'SSE'),
+                        in_pool=True,
+                        is_active=True,
+                    )
+                    db_session.add(new_stock)
+                    db_session.flush()
+                    stock_id = new_stock.id
+                    created_stocks += 1
+
+            if not stock_id:
+                continue
+
+            # 处理财务记录
+            for record in item.get('records', []):
+                fiscal_year = record.get('fiscal_year')
+                period_str = record.get('period')
+                if not fiscal_year or not period_str:
+                    continue
+
+                period = ReportPeriod(period_str)
+
+                # Upsert: 查找已有记录
+                fd = db_session.query(FinancialData).filter_by(
+                    stock_id=stock_id,
+                    fiscal_year=fiscal_year,
+                    period=period,
+                ).first()
+
+                if fd:
+                    updated_records += 1
+                else:
+                    fd = FinancialData(
+                        stock_id=stock_id,
+                        fiscal_year=fiscal_year,
+                        period=period,
+                    )
+                    db_session.add(fd)
+                    created_records += 1
+
+                # 设置字段
+                fields = record.get('fields', {})
+                for field_name, value in fields.items():
+                    if hasattr(fd, field_name) and field_name in _EDITABLE_FLOAT_FIELDS:
+                        setattr(fd, field_name, float(value) if value is not None else None)
+
+                # 元数据
+                fd.report_name = record.get('report_name')
+                fd.currency = record.get('currency', 'CNY')
+                fd.report_date = record.get('report_date')
+                fd.data_source = 'Manual Upload'
+
+                backfill_nav_per_share(fd)
+
+            imported += 1
+
+        db_session.commit()
+
+        return success_response(
+            message=f'导入完成：{imported} 只股票，新建 {created_stocks} 只，'
+                    f'新增 {created_records} 条记录，更新 {updated_records} 条记录',
+            data={
+                'imported_stocks': imported,
+                'created_stocks': created_stocks,
+                'created_records': created_records,
+                'updated_records': updated_records,
+            },
+        )
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"manual_upload_confirm 错误: {e}", exc_info=True)
+        return error_response(str(e), 500)

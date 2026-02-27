@@ -117,6 +117,12 @@ def stock_pool():
     return render_template('stock_pool.html', stocks=stocks)
 
 
+@bp.route('/stocks/manual_upload')
+def manual_upload():
+    """手动上传财务数据"""
+    return render_template('manual_upload.html')
+
+
 @bp.route('/stocks/<symbol>')
 def stock_detail(symbol: str):
     """股票详情"""
