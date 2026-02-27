@@ -438,7 +438,7 @@ async function confirmAnalyze() {
         showStatus(`AI 正在分析 ${Object.keys(subset).length} 只股票的新闻（结合投资原则），请稍候...`, true);
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 150000); // 150s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 600000); // 10min timeout
 
         const res = await fetch('/api/media/analyze', {
             method: 'POST',

@@ -15,7 +15,7 @@ AI 驱动的股票新闻分析服务
 import logging
 from datetime import datetime, timezone, date, timedelta
 from typing import List, Dict, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 from app.config.database import db_session
 from app.config.settings import AI_MODEL, NEWS_MAX_PARALLEL, get_anthropic_key
@@ -181,8 +181,11 @@ def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
                 )
                 future_to_symbol[future] = (symbol, stock_name, news_items)
 
+            # 超时时间 = 每只股票约 15 秒（含 API 限流重试），留 60 秒余量
+            total_timeout = max(len(tasks) * 15, 120) + 60
+
             try:
-                for future in as_completed(future_to_symbol, timeout=120):
+                for future in as_completed(future_to_symbol, timeout=total_timeout):
                     symbol, stock_name, news_items = future_to_symbol[future]
                     try:
                         result: Optional[Dict] = future.result(timeout=10)
@@ -192,9 +195,10 @@ def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
                             logger.warning(f"Analysis failed for {symbol}, skipping")
                     except Exception as e:
                         logger.error(f"Analysis thread error for {symbol}: {e}")
-            except TimeoutError:
+            except FuturesTimeoutError:
                 pending = [s for f, (s, _, _) in future_to_symbol.items() if not f.done()]
-                logger.error(f"News analysis timed out (120s). Pending: {pending}")
+                logger.warning(f"News analysis timed out ({total_timeout}s). "
+                               f"Completed {len(analysis_results)}, pending: {pending}")
                 # 取消尚未开始的任务
                 for f in future_to_symbol:
                     f.cancel()
