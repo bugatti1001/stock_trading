@@ -518,10 +518,26 @@ def import_stocks() -> Response:
             'accession_number', 'filing_url', 'summary', 'key_points',
         }
 
+        # Date fields that need str -> date conversion
+        _date_fields = {'ipo_date', 'report_date', 'filing_date', 'period_end_date'}
+
+        def _to_date(v):
+            """Convert ISO date string to date object, pass through date objects."""
+            if v is None:
+                return None
+            if isinstance(v, date):
+                return v
+            try:
+                return date.fromisoformat(str(v)[:10])
+            except (ValueError, TypeError):
+                return None
+
         imported_count = 0
         for sd in stocks_data:
             # Create Stock
             stock_kwargs = {k: sd[k] for k in _stock_fields if k in sd}
+            for df in _date_fields & stock_kwargs.keys():
+                stock_kwargs[df] = _to_date(stock_kwargs[df])
             stock = Stock(**stock_kwargs)
             db_session.add(stock)
             db_session.flush()  # get stock.id
@@ -537,6 +553,8 @@ def import_stocks() -> Response:
                         v = ReportPeriod(v)
                     elif k == 'extended_metrics' and isinstance(v, dict):
                         v = json.dumps(v, ensure_ascii=False)
+                    elif k in _date_fields:
+                        v = _to_date(v)
                     fd_kwargs[k] = v
                 fd_kwargs['stock_id'] = stock.id
                 db_session.add(FinancialData(**fd_kwargs))
@@ -544,6 +562,8 @@ def import_stocks() -> Response:
             # Create AnnualReport
             for ar_data in sd.get('annual_reports', []):
                 ar_kwargs = {k: ar_data[k] for k in _ar_fields if k in ar_data}
+                for df in _date_fields & ar_kwargs.keys():
+                    ar_kwargs[df] = _to_date(ar_kwargs[df])
                 ar_kwargs['stock_id'] = stock.id
                 db_session.add(AnnualReport(**ar_kwargs))
 

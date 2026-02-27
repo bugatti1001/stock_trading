@@ -43,6 +43,9 @@
         <h1><i class="bi bi-collection"></i> 股票池管理</h1>
     </div>
     <div class="col-md-4 text-end">
+        <button class="btn btn-outline-warning" id="refreshAllBtn" onclick="refreshAllStocks()">
+            <i class="bi bi-arrow-clockwise"></i> 刷新行情
+        </button>
         <a href="/stocks/manual_upload" class="btn btn-outline-info">
             <i class="bi bi-file-earmark-spreadsheet"></i> 手动上传
         </a>
@@ -1175,6 +1178,42 @@ function startEdit(el) {
 }
 
 /* ========== 导入股票池 JSON ========== */
+async function refreshAllStocks() {
+    const btn = document.getElementById('refreshAllBtn');
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+
+    const rows = document.querySelectorAll('.summary-row');
+    const symbols = [];
+    rows.forEach(row => {
+        const link = row.querySelector('a.fw-bold');
+        if (link) symbols.push(link.textContent.trim());
+    });
+
+    let done = 0, failed = 0;
+    const total = symbols.length;
+    const CONCURRENCY = 5;
+    const update = () => { btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> ${done + failed}/${total}`; };
+    update();
+
+    // Process in parallel batches
+    for (let i = 0; i < total; i += CONCURRENCY) {
+        const batch = symbols.slice(i, i + CONCURRENCY);
+        const results = await Promise.allSettled(
+            batch.map(sym => fetch(`/api/stocks/${sym}/refresh`, { method: 'POST' }).then(r => r.json()))
+        );
+        for (const r of results) {
+            if (r.status === 'fulfilled' && r.value.success) done++; else failed++;
+        }
+        update();
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = origHTML;
+    alert(`刷新完成：成功 ${done} 只，失败 ${failed} 只`);
+    location.reload();
+}
+
 async function importStocks(event) {
     const file = event.target.files[0];
     if (!file) return;
