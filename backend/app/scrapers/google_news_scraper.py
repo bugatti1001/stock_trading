@@ -62,9 +62,8 @@ def _set_cache(symbol: str, news: List[Dict]) -> None:
 
 
 def _filter_today_only(news_list: List[Dict]) -> List[Dict]:
-    """Keep only news items whose published_date matches today."""
-    today_str = date.today().isoformat()  # 'YYYY-MM-DD'
-    return [n for n in news_list if n.get('published_date') == today_str]
+    """Deprecated: no longer filters. Returns all news items as-is."""
+    return news_list
 
 
 class NewsSearchError(Exception):

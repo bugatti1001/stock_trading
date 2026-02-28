@@ -52,14 +52,15 @@ def _today_filter() -> Tuple:
 
 def _analyze_single_stock(symbol: str, stock_name: str,
                           news_items: List[Dict],
-                          principles_text: str) -> Optional[Dict]:
+                          principles_text: str,
+                          api_key: str = '') -> Optional[Dict]:
     """
     调用 Claude 分析单只股票的新闻（线程安全，不使用 db_session）
+    api_key 必须由调用方（主线程）传入，子线程中无法访问 Flask session。
     返回解析后的 dict 或 None
     """
-    api_key: str = get_anthropic_key()
     if not api_key:
-        logger.error("ANTHROPIC_API_KEY not configured")
+        logger.error("ANTHROPIC_API_KEY not provided to _analyze_single_stock")
         return None
 
     # 构建新闻文本
@@ -131,7 +132,13 @@ def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
         { "success": True, "analyses": [...], "total_analyzed": N }
     """
     try:
-        # Step 0: 清除所有非今天的旧分析（过去的新闻没有价值）
+        # Step 0: 在主线程（Flask request context）中提前读取 API key
+        # 子线程中无法访问 Flask session，必须在此处读取并传入
+        api_key: str = get_anthropic_key()
+        if not api_key:
+            return {'success': False, 'error': '未配置 ANTHROPIC_API_KEY，请在登录时输入'}
+
+        # Step 0.5: 清除所有非今天的旧分析（过去的新闻没有价值）
         _purge_stale_analyses()
 
         # Step 1: 删除本次要分析的股票的旧分析
@@ -177,7 +184,7 @@ def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
             for symbol, stock_name, news_items in tasks:
                 future = executor.submit(
                     _analyze_single_stock,
-                    symbol, stock_name, news_items, principles_text
+                    symbol, stock_name, news_items, principles_text, api_key
                 )
                 future_to_symbol[future] = (symbol, stock_name, news_items)
 
