@@ -19,6 +19,18 @@ logger = logging.getLogger(__name__)
 bp = Blueprint('stocks', __name__)
 
 
+def _to_date(v):
+    """Convert ISO date string to date object, pass through date objects."""
+    if v is None:
+        return None
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
 def _get_stock_service() -> StockService:
     """延迟创建 StockService，避免模块级绑定 session"""
     return StockService(db_session)
@@ -255,7 +267,13 @@ def refresh_stock_data(symbol: str) -> tuple[Response, int]:
         if err:
             return error_response(err, 400)
 
-        stock = _get_stock_service().refresh_stock_data(symbol)
+        # 如果该股票有手动上传的财务数据，自动使用 price_only 模式保护手动数据
+        has_manual = db_session.query(FinancialData).join(Stock).filter(
+            Stock.symbol == symbol,
+            FinancialData.data_source == 'Manual Upload',
+        ).first() is not None
+
+        stock = _get_stock_service().refresh_stock_data(symbol, price_only=has_manual)
 
         if not stock:
             return error_response('Stock not found', 404)
@@ -521,17 +539,6 @@ def import_stocks() -> Response:
         # Date fields that need str -> date conversion
         _date_fields = {'ipo_date', 'report_date', 'filing_date', 'period_end_date'}
 
-        def _to_date(v):
-            """Convert ISO date string to date object, pass through date objects."""
-            if v is None:
-                return None
-            if isinstance(v, date):
-                return v
-            try:
-                return date.fromisoformat(str(v)[:10])
-            except (ValueError, TypeError):
-                return None
-
         imported_count = 0
         for sd in stocks_data:
             # Create Stock
@@ -717,6 +724,7 @@ def manual_upload_confirm() -> tuple[Response, int]:
         created_stocks = 0
         updated_records = 0
         created_records = 0
+        new_stock_symbols = []  # track newly created stocks for auto-refresh
 
         for item in stocks_data:
             stock_id = item.get('stock_id')
@@ -748,11 +756,24 @@ def manual_upload_confirm() -> tuple[Response, int]:
                     db_session.flush()
                     stock_id = new_stock.id
                     created_stocks += 1
+                    new_stock_symbols.append(symbol.upper())
 
             if not stock_id:
                 continue
 
-            # 处理财务记录
+            # 确保股票在池中（恢复软删除的股票）
+            stk = db_session.query(Stock).get(stock_id)
+            if stk and not stk.in_pool:
+                stk.in_pool = True
+                stk.is_active = True
+
+            # 先清掉该股票的所有旧财务数据，再写入新数据
+            deleted = db_session.query(FinancialData).filter_by(
+                stock_id=stock_id).delete()
+            if deleted:
+                logger.info(f"清除 stock_id={stock_id} 旧财务数据 {deleted} 条")
+
+            # 写入新的财务记录
             for record in item.get('records', []):
                 fiscal_year = record.get('fiscal_year')
                 period_str = record.get('period')
@@ -761,23 +782,13 @@ def manual_upload_confirm() -> tuple[Response, int]:
 
                 period = ReportPeriod(period_str)
 
-                # Upsert: 查找已有记录
-                fd = db_session.query(FinancialData).filter_by(
+                fd = FinancialData(
                     stock_id=stock_id,
                     fiscal_year=fiscal_year,
                     period=period,
-                ).first()
-
-                if fd:
-                    updated_records += 1
-                else:
-                    fd = FinancialData(
-                        stock_id=stock_id,
-                        fiscal_year=fiscal_year,
-                        period=period,
-                    )
-                    db_session.add(fd)
-                    created_records += 1
+                )
+                db_session.add(fd)
+                created_records += 1
 
                 # 设置字段
                 fields = record.get('fields', {})
@@ -788,7 +799,7 @@ def manual_upload_confirm() -> tuple[Response, int]:
                 # 元数据
                 fd.report_name = record.get('report_name')
                 fd.currency = record.get('currency', 'CNY')
-                fd.report_date = record.get('report_date')
+                fd.report_date = _to_date(record.get('report_date'))
                 fd.data_source = 'Manual Upload'
 
                 backfill_nav_per_share(fd)
@@ -797,9 +808,21 @@ def manual_upload_confirm() -> tuple[Response, int]:
 
         db_session.commit()
 
+        # Auto-refresh market data only for newly created stocks (price, market cap, etc.)
+        # price_only=True ensures manually uploaded financial data is NOT overwritten
+        refreshed = 0
+        for sym in new_stock_symbols:
+            try:
+                stock_service = StockService()
+                stock_service.refresh_stock_data(sym, price_only=True)
+                refreshed += 1
+            except Exception as e:
+                logger.warning(f"新股 {sym} 行情刷新失败: {e}")
+
         return success_response(
             message=f'导入完成：{imported} 只股票，新建 {created_stocks} 只，'
-                    f'新增 {created_records} 条记录，更新 {updated_records} 条记录',
+                    f'新增 {created_records} 条记录，更新 {updated_records} 条记录'
+                    + (f'，已刷新 {refreshed} 只新股行情' if refreshed else ''),
             data={
                 'imported_stocks': imported,
                 'created_stocks': created_stocks,

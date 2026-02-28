@@ -165,8 +165,15 @@ class StockService:
         cache.invalidate_prefix("stocks_summary:")
         return True
 
-    def refresh_stock_data(self, symbol: str) -> Optional[Stock]:
-        """Refresh stock data with intelligent data source switching"""
+    def refresh_stock_data(self, symbol: str, price_only: bool = False) -> Optional[Stock]:
+        """Refresh stock data with intelligent data source switching.
+
+        Args:
+            symbol: Stock ticker symbol
+            price_only: If True, only fetch market data (price, volume, market_cap)
+                        and skip financial/fundamental data refresh.
+                        Useful after manual upload to avoid overwriting user data.
+        """
         stock = self.get_stock_by_symbol(symbol)
         if not stock:
             return None
@@ -221,12 +228,15 @@ class StockService:
             self.db.commit()
             self.db.refresh(stock)
 
-            # 同时刷新财务数据
-            try:
-                count = self.fetch_and_store_financials(symbol)
-                logger.info(f"刷新 {symbol} 时更新 {count} 条财务数据")
-            except Exception as e:
-                logger.warning(f"刷新 {symbol} 时获取财务数据失败: {e}")
+            # 同时刷新财务数据（price_only 模式跳过，保留手动上传的数据）
+            if not price_only:
+                try:
+                    count = self.fetch_and_store_financials(symbol)
+                    logger.info(f"刷新 {symbol} 时更新 {count} 条财务数据")
+                except Exception as e:
+                    logger.warning(f"刷新 {symbol} 时获取财务数据失败: {e}")
+            else:
+                logger.info(f"⏭️  price_only 模式，跳过 {symbol} 财务数据刷新")
 
             cache.invalidate_prefix("stocks_summary:")
             return stock
