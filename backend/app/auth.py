@@ -38,6 +38,8 @@ def login():
         if username == expected_user and password == expected_pass:
             session['authenticated'] = True
             session['username'] = username
+            # 存储用户输入的 Claude API Key
+            session['anthropic_api_key'] = request.form.get('api_key', '').strip()
             next_url = request.args.get('next') or request.form.get('next') or '/'
             return redirect(next_url)
         else:

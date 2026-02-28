@@ -43,7 +43,12 @@ MAX_RATE_LIMIT_RETRIES = 3
 
 # API keys (read dynamically to support runtime updates)
 def get_anthropic_key() -> str:
-    return os.getenv('ANTHROPIC_API_KEY', '')
+    """从用户登录 session 中获取 Claude API Key"""
+    try:
+        from flask import session
+        return session.get('anthropic_api_key', '')
+    except RuntimeError:
+        return ''  # outside request context (e.g. scheduler jobs)
 
 def get_openai_key() -> str:
     return os.getenv('OPENAI_API_KEY', '')
