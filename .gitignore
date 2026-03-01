@@ -68,3 +68,13 @@ coverage.xml
 # Deployment
 certbot-webroot/
 data/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Trading strategies docs
+trading strategies/
+
+# Customer folder
+customer foler/
+customer folder/
