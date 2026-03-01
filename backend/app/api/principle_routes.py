@@ -118,21 +118,32 @@ def import_principles() -> tuple:
             return error_response('请选择 JSON 文件')
 
         try:
-            content = file.read().decode('utf-8')
-            data = json.loads(content)
+            raw_bytes = file.read()
+            logger.info(f"[import] file.filename={file.filename}, raw_bytes length={len(raw_bytes)}")
+            # Strip UTF-8 BOM if present
+            if raw_bytes.startswith(b'\xef\xbb\xbf'):
+                raw_bytes = raw_bytes[3:]
+            file_content = raw_bytes.decode('utf-8')
+            logger.info(f"[import] decoded string length={len(file_content)}, first 200 chars: {file_content[:200]}")
+            data = json.loads(file_content)
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            logger.error(f"[import] parse error: {e}")
             return error_response(f'JSON 文件格式错误: {e}')
 
         if not isinstance(data, list):
+            logger.warning(f"[import] data is not a list, type={type(data)}")
             return error_response('文件内容必须是 JSON 数组')
 
+        logger.info(f"[import] parsed {len(data)} items from JSON array")
         created = []
-        for item in data:
+        for idx, item in enumerate(data):
             if not isinstance(item, dict):
+                logger.warning(f"[import] item {idx} is not a dict: {type(item)}")
                 continue
             title = (item.get('title') or '').strip()
             content_text = (item.get('content') or '').strip()
             if not title or not content_text:
+                logger.warning(f"[import] item {idx} skipped: title='{title[:30]}' content_empty={not content_text}")
                 continue
             cat = item.get('category')
             if cat is not None and cat not in VALID_CATEGORIES:
@@ -147,9 +158,15 @@ def import_principles() -> tuple:
             created.append(p)
 
         if not created:
-            return error_response('文件中没有有效的原则条目')
+            logger.warning(f"[import] no valid items created from {len(data)} items")
+            if len(data) == 0:
+                return error_response('文件中没有有效的原则条目（JSON 数组为空）')
+            return error_response(
+                f'文件中没有有效的原则条目（共 {len(data)} 条，每条需包含非空 title 和 content 字段）'
+            )
 
         db_session.commit()
+        logger.info(f"[import] successfully imported {len(created)} principles")
         return success_response(
             imported=len(created),
             principles=[p.to_dict() for p in created],

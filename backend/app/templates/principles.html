@@ -38,6 +38,33 @@
 .toggle-switch {
     cursor: pointer;
 }
+/* 去重预览 */
+.dedup-group {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+    background: #f8fafc;
+}
+.dedup-group .dedup-keep {
+    color: #059669;
+    font-size: 0.85rem;
+    margin-bottom: 0.4rem;
+}
+.dedup-group .dedup-delete {
+    color: #dc2626;
+    font-size: 0.83rem;
+    padding-left: 1rem;
+    margin-bottom: 0.2rem;
+}
+.dedup-group .dedup-merged {
+    font-size: 0.83rem;
+    color: #1d4ed8;
+    background: #eff6ff;
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    margin-top: 0.4rem;
+}
 </style>
 {% endblock %}
 
@@ -51,6 +78,12 @@
         <button class="btn btn-primary" onclick="showAddModal()">
             <i class="bi bi-plus-circle"></i> 新增原则
         </button>
+        <button class="btn btn-outline-primary ms-1" id="uploadBtn"
+                onclick="document.getElementById('uploadFileInput').click()" title="上传 JSON 文件导入原则">
+            <i class="bi bi-upload"></i> 上传
+        </button>
+        <input type="file" id="uploadFileInput" accept=".json" style="display:none"
+               onchange="uploadPrinciples(this)">
         <a href="/api/principles/export" class="btn btn-outline-secondary ms-1" title="导出 JSON">
             <i class="bi bi-download"></i>
         </a>
@@ -147,6 +180,34 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                 <button type="button" class="btn btn-primary" id="modalSaveBtn" onclick="savePrinciple()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 去重预览 Modal -->
+<div id="dedupModal"
+     style="display:none; position:fixed; inset:0; z-index:1055;
+            background:rgba(0,0,0,0.5); align-items:flex-start;
+            justify-content:center; overflow-y:auto; padding:2rem 1rem;"
+     onclick="if(event.target===this) closeDedupModal()">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable" style="margin:0 auto; width:100%; max-width:700px;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-magic text-primary me-2"></i>AI 语义去重 — 确认
+                </h5>
+                <button type="button" class="btn-close" onclick="closeDedupModal()"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">AI 识别出以下重复组。勾选您确认要合并的组，取消勾选则保留原样：</p>
+                <div id="dedupGroupList"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeDedupModal()">取消</button>
+                <button type="button" class="btn btn-primary" id="confirmDedupBtn" onclick="confirmDedup()">
+                    <i class="bi bi-check-lg me-1"></i>确认合并选中的组
+                </button>
             </div>
         </div>
     </div>
@@ -285,6 +346,154 @@ function updateCounts() {
     const activeCards = document.querySelectorAll('.principle-card:not(.inactive)');
     document.getElementById('totalCount').textContent = cards.length;
     document.getElementById('activeCount').textContent = activeCards.length;
+}
+
+/* ============ 上传 JSON + 自动去重 ============ */
+let _dedupGroups = [];
+
+function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+}
+
+async function uploadPrinciples(input) {
+    const file = input.files[0];
+    input.value = '';  // 允许重复选择同一文件
+    if (!file) return;
+
+    const btn = document.getElementById('uploadBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" style="width:0.8rem;height:0.8rem"></span>导入中…';
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        console.log(`[upload] sending file: ${file.name}, size=${file.size}, type=${file.type}`);
+
+        const res = await fetch('/api/principles/import', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+        console.log('[upload] import response:', data);
+        if (!data.success) {
+            alert('导入失败：' + (data.error || '未知错误'));
+            return;
+        }
+
+        const importedCount = data.imported || 0;
+
+        // 导入成功，自动触发去重
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" style="width:0.8rem;height:0.8rem"></span>AI 去重中…';
+
+        try {
+            const dedupRes = await fetch('/api/principles/deduplicate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const dedupData = await dedupRes.json();
+            console.log('[upload] dedup response:', dedupData);
+
+            if (dedupData.success && dedupData.groups && dedupData.groups.length > 0) {
+                // 有重复 → 弹出预览
+                _dedupGroups = dedupData.groups;
+                renderDedupPreview(dedupData.groups);
+                document.getElementById('dedupModal').style.display = 'flex';
+                document.body.style.overflow = 'hidden';
+                alert(`已导入 ${importedCount} 条原则，AI 发现 ${dedupData.groups.length} 组重复，请确认合并。`);
+            } else {
+                // 无重复，直接刷新
+                alert(`已导入 ${importedCount} 条原则，无重复项。`);
+                location.reload();
+            }
+        } catch (dedupErr) {
+            console.error('[upload] dedup failed:', dedupErr);
+            alert(`已导入 ${importedCount} 条原则。去重检查失败（${dedupErr.message}），请稍后手动去重。`);
+            location.reload();
+        }
+    } catch (e) {
+        console.error('[upload] import failed:', e);
+        alert('请求失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-upload"></i> 上传';
+    }
+}
+
+function renderDedupPreview(groups) {
+    const container = document.getElementById('dedupGroupList');
+    container.innerHTML = groups.map((g, idx) => {
+        const deleteItems = (g.delete_items || []).map(d =>
+            `<div class="dedup-delete"><i class="bi bi-x-circle me-1"></i><strong>${escHtml(d.title)}</strong>：${escHtml(d.content)}</div>`
+        ).join('');
+        const merged = g.new_title || g.new_content
+            ? `<div class="dedup-merged"><i class="bi bi-arrow-right me-1"></i>合并后：<strong>${escHtml(g.new_title || g.keep_title)}</strong> — ${escHtml(g.new_content || g.keep_content)}</div>`
+            : '';
+        return `
+        <div class="dedup-group">
+            <div class="d-flex align-items-start gap-2">
+                <input type="checkbox" class="form-check-input mt-1 dedup-check" id="dcheck-${idx}" checked>
+                <div class="flex-grow-1">
+                    <div class="dedup-keep"><i class="bi bi-check-circle me-1"></i>保留：<strong>${escHtml(g.keep_title)}</strong> — ${escHtml(g.keep_content)}</div>
+                    ${deleteItems}
+                    ${merged}
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function closeDedupModal() {
+    document.getElementById('dedupModal').style.display = 'none';
+    document.body.style.overflow = '';
+}
+
+async function confirmDedup() {
+    const confirmedGroups = [];
+    _dedupGroups.forEach((g, idx) => {
+        const cb = document.getElementById(`dcheck-${idx}`);
+        if (cb && cb.checked) {
+            confirmedGroups.push({
+                keep_id: g.keep_id,
+                delete_ids: g.delete_ids,
+                new_title: g.new_title,
+                new_content: g.new_content
+            });
+        }
+    });
+
+    if (!confirmedGroups.length) {
+        closeDedupModal();
+        location.reload();
+        return;
+    }
+
+    const btn = document.getElementById('confirmDedupBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>执行中…';
+
+    try {
+        const res = await fetch('/api/principles/deduplicate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: true, groups: confirmedGroups })
+        });
+        const data = await res.json();
+        if (data.success) {
+            closeDedupModal();
+            alert(`去重完成：删除了 ${data.removed} 条重复原则，保留 ${data.kept} 条`);
+            location.reload();
+        } else {
+            alert('去重执行失败：' + (data.error || '未知错误'));
+        }
+    } catch (e) {
+        alert('请求失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>确认合并选中的组';
+    }
 }
 </script>
 {% endblock %}
