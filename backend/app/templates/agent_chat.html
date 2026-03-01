@@ -538,6 +538,56 @@
     border-radius: 6px;
     margin-top: 0.4rem;
 }
+
+/* 新对话弹窗 */
+.new-conv-popover {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    padding: 0.75rem;
+    margin-top: 4px;
+}
+.new-conv-popover .popover-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 0.5rem;
+}
+.new-conv-popover .form-check {
+    margin-bottom: 0.6rem;
+}
+.new-conv-popover .form-check-label {
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+.new-conv-popover .popover-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+.new-conv-popover .popover-actions .btn {
+    flex: 1;
+    font-size: 0.78rem;
+    padding: 3px 8px;
+}
+.conv-item .conv-principle-icon {
+    color: #f59e0b;
+    font-size: 0.72rem;
+    margin-right: 4px;
+    flex-shrink: 0;
+}
+.principles-badge {
+    font-size: 0.68rem;
+    padding: 1px 6px;
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+}
 </style>
 {% endblock %}
 
@@ -545,10 +595,24 @@
 <div class="chat-layout">
     <!-- 左侧：对话列表 -->
     <div class="chat-sidebar">
-        <div class="chat-sidebar-header">
-            <button class="btn btn-primary btn-sm w-100" onclick="newConversation()">
+        <div class="chat-sidebar-header" style="position:relative;">
+            <button class="btn btn-primary btn-sm w-100" onclick="showNewConvPopover()">
                 <i class="bi bi-plus-lg"></i> 新对话
             </button>
+            <!-- 新对话选项弹窗 -->
+            <div class="new-conv-popover" id="newConvPopover" style="display:none;">
+                <div class="popover-title">创建新对话</div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="newConvPrinciples">
+                    <label class="form-check-label" for="newConvPrinciples">
+                        <i class="bi bi-lightbulb text-warning"></i> 参考我的投资原则
+                    </label>
+                </div>
+                <div class="popover-actions">
+                    <button class="btn btn-sm btn-primary" onclick="confirmNewConversation()">创建</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="hideNewConvPopover()">取消</button>
+                </div>
+            </div>
         </div>
         <div class="conv-list" id="convList">
             <div class="text-center text-muted small py-3">加载中...</div>
@@ -604,6 +668,9 @@
             </div>
             <div class="ms-auto d-flex align-items-center gap-2">
                 <span class="badge bg-light text-muted border small" id="contextBadge">全局上下文</span>
+                <span class="badge principles-badge small" id="principlesBadge" style="display:none;">
+                    <i class="bi bi-lightbulb"></i> 参考原则
+                </span>
                 <span class="extract-tooltip-wrap">
                     <button class="btn btn-sm btn-outline-warning" id="extractBtn"
                             onclick="openExtractModal()" disabled>
@@ -752,16 +819,20 @@
 marked.setOptions({ breaks: true, gfm: true });
 
 let currentConvId = null;
+let currentConvIncludePrinciples = false;
 let isStreaming = false;
 let extractedPrinciples = [];  // 提炼结果暂存
 let principlesPanelOpen = false;
+let conversationsCache = [];  // 缓存对话列表数据
+let pendingMessage = null;    // 等待新建对话后发送的消息
 
 /* ============ 对话列表 ============ */
 async function loadConversations() {
     try {
         const res = await fetch('/api/agent/conversations');
         const data = await res.json();
-        renderConvList(data.conversations || []);
+        conversationsCache = data.conversations || [];
+        renderConvList(conversationsCache);
     } catch (e) {
         console.error('加载对话失败', e);
     }
@@ -775,6 +846,7 @@ function renderConvList(convs) {
     }
     el.innerHTML = convs.map(c => `
         <div class="conv-item ${c.id === currentConvId ? 'active' : ''}" onclick="openConversation(${c.id})" data-id="${c.id}">
+            ${c.include_principles ? '<i class="bi bi-lightbulb-fill conv-principle-icon" title="参考投资原则"></i>' : ''}
             <span class="conv-title" title="${escHtml(c.title)}">${escHtml(c.title)}</span>
             <div class="conv-actions" onclick="event.stopPropagation()">
                 <button class="conv-action-btn" onclick="startRename(${c.id})" title="重命名"><i class="bi bi-pencil"></i></button>
@@ -784,22 +856,58 @@ function renderConvList(convs) {
     `).join('');
 }
 
-async function newConversation() {
+/* ============ 新对话弹窗 ============ */
+function showNewConvPopover() {
+    const popover = document.getElementById('newConvPopover');
+    document.getElementById('newConvPrinciples').checked = false;
+    popover.style.display = 'block';
+}
+
+function hideNewConvPopover() {
+    document.getElementById('newConvPopover').style.display = 'none';
+    pendingMessage = null;
+}
+
+async function confirmNewConversation() {
+    const includePrinciples = document.getElementById('newConvPrinciples').checked;
+    const savedPendingMessage = pendingMessage;  // 保存，因为 hide 会清空
+    document.getElementById('newConvPopover').style.display = 'none';
+    pendingMessage = null;
     try {
         const res = await fetch('/api/agent/conversations', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: '新对话', context_mode: 'global' })
+            body: JSON.stringify({ title: '新对话', context_mode: 'global', include_principles: includePrinciples })
         });
         const data = await res.json();
         if (data.success) {
+            currentConvId = data.conversation.id;
+            currentConvIncludePrinciples = includePrinciples;
+            updatePrinciplesBadge();
+            updateExtractBtn();
             await loadConversations();
-            openConversation(data.conversation.id);
+            document.querySelectorAll('.conv-item').forEach(el => {
+                el.classList.toggle('active', parseInt(el.dataset.id) === currentConvId);
+            });
+            // 如果有等待发送的消息，立即发送
+            if (savedPendingMessage) {
+                document.getElementById('msgInput').value = savedPendingMessage;
+                sendMessage();
+            }
         }
     } catch (e) {
         console.error('新建对话失败', e);
     }
 }
+
+// 点击弹窗外部时关闭
+document.addEventListener('click', function(e) {
+    const popover = document.getElementById('newConvPopover');
+    const header = popover?.parentElement;
+    if (popover && popover.style.display !== 'none' && header && !header.contains(e.target)) {
+        hideNewConvPopover();
+    }
+});
 
 async function deleteConversation(convId) {
     if (!confirm('删除这条对话？')) return;
@@ -863,6 +971,10 @@ function startRename(convId) {
 
 async function openConversation(convId) {
     currentConvId = convId;
+    // 从缓存读取 include_principles
+    const convData = conversationsCache.find(c => c.id === convId);
+    currentConvIncludePrinciples = convData ? convData.include_principles : false;
+    updatePrinciplesBadge();
     updateExtractBtn();
     // 高亮
     document.querySelectorAll('.conv-item').forEach(el => {
@@ -889,6 +1001,11 @@ async function openConversation(convId) {
     }
 }
 
+function updatePrinciplesBadge() {
+    const badge = document.getElementById('principlesBadge');
+    if (badge) badge.style.display = currentConvIncludePrinciples ? 'inline-block' : 'none';
+}
+
 function updateExtractBtn() {
     const btn = document.getElementById('extractBtn');
     if (btn) btn.disabled = !currentConvId;
@@ -901,22 +1018,11 @@ async function sendMessage() {
     const text = input.value.trim();
     if (!text) return;
 
-    // 如果没有当前对话，先创建一个
+    // 如果没有当前对话，弹出选项让用户选择是否参考原则
     if (!currentConvId) {
-        const res = await fetch('/api/agent/conversations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: '新对话', context_mode: 'global' })
-        });
-        const data = await res.json();
-        if (!data.success) return;
-        currentConvId = data.conversation.id;
-        updateExtractBtn();
-        await loadConversations();
-        // 高亮新建的对话
-        document.querySelectorAll('.conv-item').forEach(el => {
-            el.classList.toggle('active', parseInt(el.dataset.id) === currentConvId);
-        });
+        pendingMessage = text;
+        showNewConvPopover();
+        return;
     }
 
     input.value = '';

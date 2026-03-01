@@ -78,6 +78,13 @@ def create_app():
     except Exception as e:
         logger.warning(f"美股货币/来源修复: {e}")
 
+    try:
+        from app.config.database import engine
+        from migrations.add_include_principles import run as migrate_include_principles
+        migrate_include_principles(engine)
+    except Exception as e:
+        logger.warning(f"对话投资原则字段迁移检查: {e}")
+
     # Initialize scheduler service
     if app.config.get('SCHEDULER_ENABLED', True):
         try:

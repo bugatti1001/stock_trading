@@ -32,8 +32,12 @@ def create_conversation():
         title = data.get('title', '新对话')
         context_mode = data.get('context_mode', 'global')
         stock_id = data.get('stock_id')
+        include_principles = bool(data.get('include_principles', False))
 
-        conv = ai_agent_service.create_conversation(title, context_mode, stock_id)
+        conv = ai_agent_service.create_conversation(
+            title, context_mode, stock_id,
+            include_principles=include_principles,
+        )
         return success_response(conversation=conv.to_dict(), status_code=201)
     except Exception as e:
         logger.error(f"create_conversation 错误: {e}")
