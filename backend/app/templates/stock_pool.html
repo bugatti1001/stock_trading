@@ -137,7 +137,9 @@
                         <td>
                             {% if stock._all_source_labels %}
                                 {% for src in stock._all_source_labels %}
-                                {% if src in ('SEC解析', '手动上传') %}
+                                {% if src == 'AI补全' %}
+                                <span class="badge bg-info text-white" style="font-size:.7rem;">AI补全</span>
+                                {% elif src in ('SEC解析', '手动上传') %}
                                 <span class="badge bg-info text-white" style="font-size:.7rem;">{{ src }}</span>
                                 {% elif src == '雪球' %}
                                 <span class="badge bg-warning text-dark" style="font-size:.7rem;">{{ src }}</span>
@@ -158,6 +160,10 @@
                                 <button class="btn btn-outline-success"
                                         onclick="refreshStock('{{ stock.symbol }}')" title="刷新数据">
                                     <i class="bi bi-arrow-repeat"></i>
+                                </button>
+                                <button class="btn btn-outline-info" id="aiBackfillBtn-{{ stock.symbol }}"
+                                        onclick="aiBackfill('{{ stock.symbol }}')" title="AI补全财务数据">
+                                    <i class="bi bi-magic"></i>
                                 </button>
                                 <button class="btn btn-outline-danger"
                                         onclick="removeStock('{{ stock.symbol }}')" title="移除">
@@ -712,6 +718,25 @@
     </div>
 </div>
 
+<!-- AI 补全结果 Modal -->
+<div class="modal fade" id="aiBackfillModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="aiBackfillModalTitle">AI 补全结果</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="aiBackfillModalBody" style="max-height:70vh;overflow-y:auto;">
+                <!-- Dynamically populated -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="aiBackfillConfirmBtn" onclick="confirmBackfill()">确认保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -1212,6 +1237,202 @@ async function refreshAllStocks() {
     btn.innerHTML = origHTML;
     alert(`刷新完成：成功 ${done} 只，失败 ${failed} 只`);
     location.reload();
+}
+
+/* ========== AI 补全 ========== */
+
+const FIELD_LABELS = {
+    revenue: '营业收入', cost_of_revenue: '营业成本', operating_income: '营业利润',
+    net_income: '净利润', net_income_to_parent: '归母净利润', adjusted_net_income: '扣非净利润',
+    selling_expense: '销售费用', admin_expense: '管理费用', rd_expense: '研发费用', finance_cost: '财务费用',
+    cash_and_equivalents: '现金及等价物', accounts_receivable: '应收账款', inventory: '存货',
+    investments: '投资', accounts_payable: '应付账款', contract_liability_change_pct: '合同负债变动%',
+    short_term_borrowings: '短期借款', long_term_borrowings: '长期借款',
+    total_assets: '总资产', total_equity: '净资产', non_current_assets: '非流动资产', current_liabilities: '流动负债',
+    operating_cash_flow: '经营现金流', capital_expenditure: '资本开支',
+    shares_outstanding: '总股本(亿股)', dividends_per_share: '每股分红', nav_per_share: '每股净资产',
+};
+
+const PERCENTAGE_FIELDS = new Set(['contract_liability_change_pct']);
+const SHARE_FIELDS = new Set(['shares_outstanding', 'dividends_per_share', 'nav_per_share']);
+
+function formatBackfillValue(field, value) {
+    if (value === null || value === undefined) return '—';
+    const num = parseFloat(value);
+    if (isNaN(num)) return String(value);
+    if (PERCENTAGE_FIELDS.has(field)) return (num * 100).toFixed(1) + '%';
+    if (SHARE_FIELDS.has(field)) return num.toFixed(2);
+    // Monetary fields: show in billions
+    if (Math.abs(num) >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+    if (Math.abs(num) >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+    return num.toFixed(2);
+}
+
+let _backfillSymbol = '';
+let _backfillResult = null;
+
+async function aiBackfill(symbol) {
+    if (!confirm(`确定要对 ${symbol} 进行 AI 数据补全吗？\n\n这将调用 Claude API 搜索互联网数据，可能需要 1-3 分钟。`)) return;
+
+    _backfillSymbol = symbol;
+    const btn = document.getElementById(`aiBackfillBtn-${symbol}`);
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    try {
+        const res = await fetch(`/api/stocks/${symbol}/ai-backfill`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) { alert(`AI 补全失败: ${data.error}`); return; }
+        _backfillResult = data.data;
+        showBackfillModal(_backfillResult);
+    } catch (e) {
+        alert(`AI 补全请求失败: ${e.message}`);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = origHTML;
+    }
+}
+
+function showBackfillModal(result) {
+    const info = result.stock_info || {};
+    document.getElementById('aiBackfillModalTitle').textContent =
+        `AI 补全结果 - ${info.symbol || _backfillSymbol} ${info.name || ''}`;
+
+    const body = document.getElementById('aiBackfillModalBody');
+    let html = '';
+
+    const autoFilled = result.auto_filled || {};
+    const conflicts = result.conflicts || {};
+    const notFound = result.not_found || {};
+
+    const autoCount = Object.values(autoFilled).reduce((s, o) => s + Object.keys(o).length, 0);
+    const conflictCount = Object.values(conflicts).reduce((s, o) => s + Object.keys(o).length, 0);
+    const notFoundCount = Object.values(notFound).reduce((s, o) => s + o.length, 0);
+
+    // Summary
+    html += `<div class="alert alert-secondary py-2 mb-3">
+        <strong>摘要：</strong>
+        自动补全 <span class="badge bg-success">${autoCount}</span> 个字段，
+        存在冲突 <span class="badge bg-warning text-dark">${conflictCount}</span> 个字段，
+        未找到 <span class="badge bg-secondary">${notFoundCount}</span> 个字段
+    </div>`;
+
+    // 1. Auto-filled (green)
+    if (autoCount > 0) {
+        html += `<h6 class="text-success"><i class="bi bi-check-circle me-1"></i>自动补全字段（将直接写入）</h6>`;
+        html += '<table class="table table-sm table-bordered mb-3" style="font-size:.85rem"><thead><tr><th>年份</th><th>字段</th><th>AI 找到的值</th></tr></thead><tbody>';
+        for (const [year, fields] of Object.entries(autoFilled)) {
+            for (const [field, value] of Object.entries(fields)) {
+                html += `<tr class="table-success">
+                    <td>FY${year}</td>
+                    <td>${FIELD_LABELS[field] || field}</td>
+                    <td>${formatBackfillValue(field, value)}</td>
+                </tr>`;
+            }
+        }
+        html += '</tbody></table>';
+    }
+
+    // 2. Conflicts (yellow)
+    if (conflictCount > 0) {
+        html += `<h6 class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>冲突字段（请选择使用哪个值）</h6>`;
+        html += '<table class="table table-sm table-bordered mb-3" style="font-size:.85rem"><thead><tr><th>年份</th><th>字段</th><th>当前值</th><th>AI 值</th><th>选择</th></tr></thead><tbody>';
+        for (const [year, fields] of Object.entries(conflicts)) {
+            for (const [field, vals] of Object.entries(fields)) {
+                const radioName = `conflict_${year}_${field}`;
+                html += `<tr class="table-warning">
+                    <td>FY${year}</td>
+                    <td>${FIELD_LABELS[field] || field}</td>
+                    <td>${formatBackfillValue(field, vals.current)}</td>
+                    <td>${formatBackfillValue(field, vals.ai)}</td>
+                    <td>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="${radioName}" value="current" checked>
+                            <label class="form-check-label">保留当前</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="${radioName}" value="ai">
+                            <label class="form-check-label">使用AI值</label>
+                        </div>
+                    </td>
+                </tr>`;
+            }
+        }
+        html += '</tbody></table>';
+    }
+
+    // 3. Not found (grey)
+    if (notFoundCount > 0) {
+        html += `<h6 class="text-muted"><i class="bi bi-dash-circle me-1"></i>未找到的字段</h6>`;
+        html += '<div class="mb-3" style="font-size:.85rem">';
+        for (const [year, fields] of Object.entries(notFound)) {
+            html += `<div class="mb-1"><strong>FY${year}:</strong> `;
+            html += fields.map(f => `<span class="badge bg-light text-dark border me-1">${FIELD_LABELS[f] || f}</span>`).join('');
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+
+    if (autoCount === 0 && conflictCount === 0) {
+        html += '<div class="alert alert-info">没有可补全的数据。所有字段要么已有值，要么 AI 也未能找到。</div>';
+        document.getElementById('aiBackfillConfirmBtn').style.display = 'none';
+    } else {
+        document.getElementById('aiBackfillConfirmBtn').style.display = '';
+    }
+
+    body.innerHTML = html;
+    new bootstrap.Modal(document.getElementById('aiBackfillModal')).show();
+}
+
+async function confirmBackfill() {
+    if (!_backfillResult || !_backfillSymbol) return;
+
+    // Collect conflict resolutions
+    const conflictResolutions = {};
+    const aiValues = {};
+    const conflicts = _backfillResult.conflicts || {};
+    for (const [year, fields] of Object.entries(conflicts)) {
+        conflictResolutions[year] = {};
+        aiValues[year] = {};
+        for (const [field, vals] of Object.entries(fields)) {
+            const radioName = `conflict_${year}_${field}`;
+            const chosen = document.querySelector(`input[name="${radioName}"]:checked`);
+            conflictResolutions[year][field] = chosen ? chosen.value : 'current';
+            aiValues[year][field] = vals.ai;
+        }
+    }
+
+    const payload = {
+        auto_filled: _backfillResult.auto_filled || {},
+        conflict_resolutions: conflictResolutions,
+        ai_values: aiValues,
+    };
+
+    const btn = document.getElementById('aiBackfillConfirmBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>保存中…';
+
+    try {
+        const res = await fetch(`/api/stocks/${_backfillSymbol}/ai-backfill/confirm`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+            alert(data.message || 'AI 补全数据已保存');
+            bootstrap.Modal.getInstance(document.getElementById('aiBackfillModal')).hide();
+            location.reload();
+        } else {
+            alert(`保存失败: ${data.error}`);
+        }
+    } catch (e) {
+        alert(`保存请求失败: ${e.message}`);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '确认保存';
+    }
 }
 
 async function importStocks(event) {

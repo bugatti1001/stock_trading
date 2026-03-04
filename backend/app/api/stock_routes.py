@@ -834,3 +834,132 @@ def manual_upload_confirm() -> tuple[Response, int]:
         db_session.rollback()
         logger.error(f"manual_upload_confirm 错误: {e}", exc_info=True)
         return error_response(str(e), 500)
+
+
+# ── AI Backfill ───────────────────────────────────────────────
+
+
+@bp.route('/<symbol>/ai-backfill', methods=['POST'])
+def ai_backfill(symbol: str) -> tuple[Response, int]:
+    """触发 AI 补全：搜索互联网补全缺失的财务数据"""
+    try:
+        symbol, err = validate_symbol(symbol)
+        if err:
+            return error_response(err, 400)
+
+        stock = _get_stock_service().get_stock_by_symbol(symbol)
+        if not stock:
+            return error_response('Stock not found', 404)
+
+        from app.services.ai_backfill_service import run_ai_backfill
+        result = run_ai_backfill(symbol)
+        return success_response(data=result)
+    except ValueError as e:
+        return error_response(str(e), 400)
+    except Exception as e:
+        logger.error(f"[AI Backfill] {symbol} 失败: {e}", exc_info=True)
+        return error_response(str(e), 500)
+
+
+@bp.route('/<symbol>/ai-backfill/confirm', methods=['POST'])
+def ai_backfill_confirm(symbol: str) -> tuple[Response, int]:
+    """确认并保存 AI 补全结果"""
+    try:
+        symbol, err = validate_symbol(symbol)
+        if err:
+            return error_response(err, 400)
+
+        stock = _get_stock_service().get_stock_by_symbol(symbol)
+        if not stock:
+            return error_response('Stock not found', 404)
+
+        data = request.get_json(silent=True) or {}
+        auto_filled = data.get('auto_filled', {})
+        conflict_resolutions = data.get('conflict_resolutions', {})
+        ai_values = data.get('ai_values', {})
+
+        from app.services.kpi_calculator import backfill_nav_per_share
+
+        saved_count = 0
+
+        for year_str, fields in auto_filled.items():
+            year = int(year_str)
+            fd = db_session.query(FinancialData).filter_by(
+                stock_id=stock.id,
+                fiscal_year=year,
+                period=ReportPeriod.ANNUAL,
+            ).first()
+
+            if not fd:
+                # Create new record
+                fd = FinancialData(
+                    stock_id=stock.id,
+                    fiscal_year=year,
+                    period=ReportPeriod.ANNUAL,
+                    report_date=date(year, 12, 31),
+                    currency=stock.currency or 'USD',
+                    data_source='AI Backfill',
+                )
+                db_session.add(fd)
+                db_session.flush()
+
+            # Set auto-filled fields
+            ext = fd.extended_metrics_dict or {}
+            field_sources = ext.get('field_sources', {})
+
+            for field_name, value in fields.items():
+                if hasattr(fd, field_name) and field_name in _EDITABLE_FLOAT_FIELDS:
+                    setattr(fd, field_name, float(value) if value is not None else None)
+                    field_sources[field_name] = 'AI Backfill'
+                    saved_count += 1
+
+            ext['field_sources'] = field_sources
+            fd.extended_metrics_dict = ext
+            backfill_nav_per_share(fd)
+
+        # Process conflict resolutions
+        for year_str, resolutions in conflict_resolutions.items():
+            year = int(year_str)
+            fd = db_session.query(FinancialData).filter_by(
+                stock_id=stock.id,
+                fiscal_year=year,
+                period=ReportPeriod.ANNUAL,
+            ).first()
+
+            if not fd:
+                continue
+
+            ext = fd.extended_metrics_dict or {}
+            field_sources = ext.get('field_sources', {})
+            year_ai_vals = ai_values.get(year_str, {})
+
+            for field_name, choice in resolutions.items():
+                if choice == 'ai' and field_name in year_ai_vals:
+                    ai_val = year_ai_vals[field_name]
+                    if hasattr(fd, field_name) and field_name in _EDITABLE_FLOAT_FIELDS:
+                        setattr(fd, field_name, float(ai_val) if ai_val is not None else None)
+                        field_sources[field_name] = 'AI Backfill'
+                        saved_count += 1
+                # choice == 'current' → keep existing, no action needed
+
+            ext['field_sources'] = field_sources
+            fd.extended_metrics_dict = ext
+            backfill_nav_per_share(fd)
+
+        db_session.commit()
+
+        # Invalidate cache
+        from app.services.stock_analysis_service import invalidate_stock_cache
+        invalidate_stock_cache()
+
+        logger.info(f"[AI Backfill] {symbol}: saved {saved_count} fields")
+
+        return success_response(
+            message=f'AI 补全完成，共保存 {saved_count} 个字段',
+            data={'saved_count': saved_count},
+        )
+
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"[AI Backfill Confirm] {symbol} 失败: {e}", exc_info=True)
+        return error_response(str(e), 500)
