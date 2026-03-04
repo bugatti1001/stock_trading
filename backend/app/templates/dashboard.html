@@ -197,6 +197,31 @@
 marked.setOptions({ breaks: true, gfm: true });
 
 /* ===== AI 选股建议 ===== */
+const INSIGHT_CACHE_KEY = 'dashboard_insight';
+
+function getTodayStr() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+function showInsightContent(markdown) {
+    document.getElementById('insightPlaceholder').style.display = 'none';
+    document.getElementById('insightSkeleton').style.display = 'none';
+    document.getElementById('insightError').style.display = 'none';
+    const contentEl = document.getElementById('insightContent');
+    contentEl.innerHTML = safeParse(markdown);
+    contentEl.style.display = 'block';
+}
+
+function initInsight() {
+    try {
+        const cached = JSON.parse(localStorage.getItem(INSIGHT_CACHE_KEY));
+        if (cached && cached.date === getTodayStr() && cached.content) {
+            showInsightContent(cached.content);
+        }
+    } catch(e) { /* ignore parse errors */ }
+}
+
 async function loadInsight() {
     document.getElementById('insightPlaceholder').style.display = 'none';
     document.getElementById('insightSkeleton').style.display = 'block';
@@ -212,9 +237,11 @@ async function loadInsight() {
         if (btn) btn.disabled = false;
 
         if (data.success && data.insight) {
-            const contentEl = document.getElementById('insightContent');
-            contentEl.innerHTML = safeParse(data.insight);
-            contentEl.style.display = 'block';
+            showInsightContent(data.insight);
+            localStorage.setItem(INSIGHT_CACHE_KEY, JSON.stringify({
+                date: getTodayStr(),
+                content: data.insight
+            }));
         } else {
             const errMsg = document.getElementById('insightErrorMsg');
             if (errMsg) errMsg.textContent = data.error || '生成失败，请稍后重试';
@@ -232,6 +259,8 @@ async function loadInsight() {
 function refreshInsight() {
     loadInsight();
 }
+
+initInsight();
 
 // Sector Distribution Chart
 const sectorData = {{ sector_data | tojson }};
@@ -286,6 +315,6 @@ new Chart(marketCapCtx, {
     }
 });
 
-// AI 选股建议现在需要手动点击生成，不再自动加载
+// AI 选股建议：页面加载时从 localStorage 恢复当天缓存，手动刷新时重新生成
 </script>
 {% endblock %}
