@@ -18,7 +18,7 @@ class Conversation(BaseModel):
     stock_id = Column(Integer, ForeignKey('stocks.id'), nullable=True)
     include_principles = Column(Boolean, default=False, nullable=False)
 
-    messages = relationship('Message', backref='conversation', lazy='dynamic',
+    messages = relationship('Message', backref='conversation', lazy='selectin',
                             cascade='all, delete-orphan', order_by='Message.created_at')
 
     def to_dict(self) -> dict:
@@ -30,7 +30,7 @@ class Conversation(BaseModel):
             'include_principles': bool(self.include_principles),
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-            'message_count': self.messages.count()
+            'message_count': len(self.messages)
         }
 
 

@@ -203,26 +203,35 @@ def delete_trade(trade_id: int) -> tuple:
 def trade_stats() -> tuple:
     """交易习惯统计：常见违规 Top5、平均风险分等"""
     try:
-        trades = db_session.query(TradeRecord).all()
-        if not trades:
+        from sqlalchemy import func
+
+        # 用聚合查询代替全表加载
+        total = db_session.query(func.count(TradeRecord.id)).scalar() or 0
+        if not total:
             return success_response(stats={
                 'total': 0, 'avg_risk_score': 0, 'top_violations': []
             })
 
-        total = len(trades)
-        scores = [t.risk_score for t in trades if t.risk_score is not None]
-        avg_score = sum(scores) / len(scores) if scores else 0
+        avg_score_result = db_session.query(
+            func.avg(TradeRecord.risk_score)
+        ).filter(TradeRecord.risk_score.isnot(None)).scalar()
+        avg_score = float(avg_score_result) if avg_score_result else 0
 
-        # 统计违规频率
+        high_risk = db_session.query(
+            func.count(TradeRecord.id)
+        ).filter(TradeRecord.risk_score >= 70).scalar() or 0
+
+        # violations 是 JSON 字段，仍需加载但限制条数（只需有 violations 的记录）
+        trades_with_violations = db_session.query(TradeRecord.violations).filter(
+            TradeRecord.violations.isnot(None)
+        ).limit(5000).all()
+
         violation_count = {}
-        for t in trades:
-            for v in (t.violations or []):
+        for (violations,) in trades_with_violations:
+            for v in (violations or []):
                 violation_count[v] = violation_count.get(v, 0) + 1
 
         top_violations = sorted(violation_count.items(), key=lambda x: -x[1])[:5]
-
-        # 高风险交易比例
-        high_risk = sum(1 for s in scores if s >= 70)
 
         return success_response(stats={
             'total': total,
@@ -240,7 +249,7 @@ def trade_stats() -> tuple:
 def export_trades() -> Response:
     """导出交易记录为 CSV 文件下载"""
     try:
-        trades = db_session.query(TradeRecord).order_by(desc(TradeRecord.trade_date)).all()
+        trades = db_session.query(TradeRecord).order_by(desc(TradeRecord.trade_date)).limit(10000).all()
 
         output = io.StringIO()
         writer = csv.writer(output)

@@ -37,6 +37,15 @@ class XueqiuScraper:
         self._session: Optional[requests.Session] = None
         self._last_request_time: float = 0
 
+    def close(self) -> None:
+        """关闭底层 HTTP 连接池，释放资源。"""
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    def __del__(self):
+        self.close()
+
     # 用于自动获取 token 的页面列表（按优先级）
     _TOKEN_PAGES = [
         'https://xueqiu.com/hq',       # 行情页，最可靠

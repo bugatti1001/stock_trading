@@ -19,6 +19,7 @@ class SECEdgarScraper:
         'User-Agent': 'Stock Analysis System contact@example.com',  # SEC requires user agent
         'Accept-Encoding': 'gzip, deflate',
     }
+    REQUEST_TIMEOUT = 30  # seconds
 
     def __init__(self, download_dir: str = None):
         """
@@ -43,7 +44,7 @@ class SECEdgarScraper:
         try:
             # SEC provides a ticker to CIK mapping file (hosted on www.sec.gov)
             url = f"{self.WWW_BASE_URL}/files/company_tickers.json"
-            response = requests.get(url, headers=self.HEADERS)
+            response = requests.get(url, headers=self.HEADERS, timeout=self.REQUEST_TIMEOUT)
             response.raise_for_status()
 
             data = response.json()
@@ -80,7 +81,7 @@ class SECEdgarScraper:
         try:
             # SEC submissions endpoint
             url = f"{self.BASE_URL}/submissions/CIK{cik}.json"
-            response = requests.get(url, headers=self.HEADERS)
+            response = requests.get(url, headers=self.HEADERS, timeout=self.REQUEST_TIMEOUT)
             response.raise_for_status()
 
             data = response.json()
@@ -141,7 +142,7 @@ class SECEdgarScraper:
             url = f"{self.WWW_BASE_URL}/Archives/edgar/data/{cik.lstrip('0')}/{acc_num}/{primary_document}"
 
             # Download
-            response = requests.get(url, headers=self.HEADERS)
+            response = requests.get(url, headers=self.HEADERS, timeout=self.REQUEST_TIMEOUT)
             response.raise_for_status()
 
             # Create filename
@@ -259,7 +260,7 @@ class SECEdgarScraper:
         """
         try:
             url = f"{self.BASE_URL}/api/xbrl/companyfacts/CIK{cik}.json"
-            response = requests.get(url, headers=self.HEADERS)
+            response = requests.get(url, headers=self.HEADERS, timeout=self.REQUEST_TIMEOUT)
             response.raise_for_status()
 
             data = response.json()

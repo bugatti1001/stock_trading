@@ -191,8 +191,7 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
         logger.info(f"Starting parallel news analysis for {len(tasks)} stocks "
                      f"(model={AI_MODEL}, max_workers={min(NEWS_MAX_PARALLEL, len(tasks))})")
 
-        executor = ThreadPoolExecutor(max_workers=min(NEWS_MAX_PARALLEL, len(tasks)))
-        try:
+        with ThreadPoolExecutor(max_workers=min(NEWS_MAX_PARALLEL, len(tasks))) as executor:
             future_to_symbol: Dict = {}
             for symbol, stock_name, news_items in tasks:
                 future = executor.submit(
@@ -245,8 +244,6 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
                 for sym in pending:
                     completed += 1
                     yield f"data: {json.dumps({'type': 'error', 'symbol': sym, 'message': '分析超时', 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
 
         yield "data: [DONE]\n\n"
 

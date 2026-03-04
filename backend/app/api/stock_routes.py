@@ -521,11 +521,11 @@ def import_stocks() -> Response:
             return error_response('JSON 格式错误：缺少 stocks 数组', 400)
 
         # Replace mode: delete all in-pool stocks and their related data
-        old_stocks = db_session.query(Stock).filter(Stock.in_pool.is_(True)).all()
-        for s in old_stocks:
-            db_session.query(FinancialData).filter(FinancialData.stock_id == s.id).delete()
-            db_session.query(AnnualReport).filter(AnnualReport.stock_id == s.id).delete()
-            db_session.delete(s)
+        old_stock_ids = [s.id for s in db_session.query(Stock.id).filter(Stock.in_pool.is_(True)).all()]
+        if old_stock_ids:
+            db_session.query(FinancialData).filter(FinancialData.stock_id.in_(old_stock_ids)).delete(synchronize_session=False)
+            db_session.query(AnnualReport).filter(AnnualReport.stock_id.in_(old_stock_ids)).delete(synchronize_session=False)
+            db_session.query(Stock).filter(Stock.id.in_(old_stock_ids)).delete(synchronize_session=False)
         db_session.flush()
 
         # Import each stock
@@ -673,16 +673,9 @@ def manual_upload_match() -> tuple[Response, int]:
                 continue
             # 精确匹配
             stock = db_session.query(Stock).filter(Stock.name == name).first()
-            # 模糊匹配
+            # 模糊匹配（正向：stock.name 包含 name，或反向：name 包含 stock.name）
             if not stock:
-                stock = db_session.query(Stock).filter(Stock.name.contains(name)).first()
-            if not stock:
-                # 反向：名称包含在 stock.name 中
-                all_stocks = db_session.query(Stock).all()
-                for s in all_stocks:
-                    if s.name and name in s.name:
-                        stock = s
-                        break
+                stock = db_session.query(Stock).filter(Stock.name.ilike(f'%{name}%')).first()
 
             if stock:
                 results.append({

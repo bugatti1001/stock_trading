@@ -209,7 +209,7 @@ def get_messages(conversation_id: int) -> List[Message]:
     conv: Optional[Conversation] = db_session.query(Conversation).get(conversation_id)
     if not conv:
         return []
-    return conv.messages.order_by(Message.created_at).all()
+    return list(conv.messages)
 
 
 def delete_conversation(conversation_id: int) -> bool:
