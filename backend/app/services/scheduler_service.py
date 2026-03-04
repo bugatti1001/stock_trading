@@ -103,53 +103,49 @@ class SchedulerService:
             replace_existing=True
         )
 
-    @staticmethod
-    def _refresh_single_stock(service, symbol: str, refresh_type: str = 'info') -> dict:
+    def _refresh_single_stock(self, symbol: str, refresh_type: str = 'info') -> dict:
         """Refresh a single stock (thread-safe helper for parallel execution)."""
         try:
-            if refresh_type == 'financial':
-                result = service.fetch_financial_data(symbol)
-            else:
-                result = service.update_stock_info(symbol)
-            return {'symbol': symbol, 'success': result.get('success', False), 'error': result.get('error')}
+            with self.app.app_context():
+                from app.services.stock_service import StockService
+                service = StockService(db_session)
+                if refresh_type == 'financial':
+                    count = service.fetch_and_store_financials(symbol)
+                    return {'symbol': symbol, 'success': count > 0, 'error': None}
+                else:
+                    stock = service.refresh_stock_data(symbol)
+                    return {'symbol': symbol, 'success': stock is not None, 'error': None}
         except Exception as e:
             return {'symbol': symbol, 'success': False, 'error': str(e)}
 
     def _refresh_stock_data_job(self):
-        """刷新股票数据任务（并行执行）"""
+        """刷新股票数据任务（串行执行，每只间隔1秒）"""
         logger.info("💹 开始执行定时任务: 刷新股票数据")
 
         try:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
             import time as _time
-            from app.services.data_service import DataService
             from app.models.stock import Stock
 
-            stocks = db_session.query(Stock).filter_by(in_pool=True).all()
+            with self.app.app_context():
+                stocks = db_session.query(Stock).filter_by(in_pool=True).all()
+                symbols = [s.symbol for s in stocks]
 
-            if not stocks:
+            if not symbols:
                 logger.warning("股票池为空，跳过刷新")
                 return
 
-            service = DataService()
             success_count = 0
             error_count = 0
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = {}
-                for i, stock in enumerate(stocks):
-                    if i > 0:
-                        _time.sleep(1)  # Rate-limit: 1s between submissions
-                    future = executor.submit(self._refresh_single_stock, service, stock.symbol, 'info')
-                    futures[future] = stock.symbol
-
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result['success']:
-                        success_count += 1
-                    else:
-                        error_count += 1
-                        logger.warning(f"刷新 {result['symbol']} 失败: {result.get('error')}")
+            for i, symbol in enumerate(symbols):
+                if i > 0:
+                    _time.sleep(1)
+                result = self._refresh_single_stock(symbol, 'info')
+                if result['success']:
+                    success_count += 1
+                else:
+                    error_count += 1
+                    logger.warning(f"刷新 {result['symbol']} 失败: {result.get('error')}")
 
             logger.info(
                 f"✅ 股票数据刷新完成: "
@@ -160,40 +156,33 @@ class SchedulerService:
             logger.error(f"❌ 股票数据刷新任务异常: {e}", exc_info=True)
 
     def _refresh_financial_data_job(self):
-        """刷新财务数据任务（每周一次，并行执行）"""
+        """刷新财务数据任务（每周一次，串行执行）"""
         logger.info("📊 开始执行定时任务: 刷新财务数据")
 
         try:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
             import time as _time
-            from app.services.data_service import DataService
             from app.models.stock import Stock
 
-            stocks = db_session.query(Stock).filter_by(in_pool=True).all()
+            with self.app.app_context():
+                stocks = db_session.query(Stock).filter_by(in_pool=True).all()
+                symbols = [s.symbol for s in stocks]
 
-            if not stocks:
+            if not symbols:
                 logger.warning("股票池为空，跳过刷新")
                 return
 
-            service = DataService()
             success_count = 0
             error_count = 0
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = {}
-                for i, stock in enumerate(stocks):
-                    if i > 0:
-                        _time.sleep(1)  # Rate-limit: 1s between submissions
-                    future = executor.submit(self._refresh_single_stock, service, stock.symbol, 'financial')
-                    futures[future] = stock.symbol
-
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result['success']:
-                        success_count += 1
-                    else:
-                        error_count += 1
-                        logger.warning(f"刷新 {result['symbol']} 财务数据失败: {result.get('error')}")
+            for i, symbol in enumerate(symbols):
+                if i > 0:
+                    _time.sleep(1)
+                result = self._refresh_single_stock(symbol, 'financial')
+                if result['success']:
+                    success_count += 1
+                else:
+                    error_count += 1
+                    logger.warning(f"刷新 {result['symbol']} 财务数据失败: {result.get('error')}")
 
             logger.info(
                 f"✅ 财务数据刷新完成: "
