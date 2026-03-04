@@ -5,6 +5,7 @@ from .conversation import Conversation, Message
 from .trade_record import TradeRecord
 from .user_principle import UserPrinciple
 from .stock_news_analysis import StockNewsAnalysis
+from .user_setting import UserSetting
 
 __all__ = [
     'Stock',
@@ -15,4 +16,5 @@ __all__ = [
     'TradeRecord',
     'UserPrinciple',
     'StockNewsAnalysis',
+    'UserSetting',
 ]

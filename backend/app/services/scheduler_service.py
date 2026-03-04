@@ -10,7 +10,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 
-from app.config.database import db_session
+from app.config.database import get_all_usernames, create_user_session
 
 logger = logging.getLogger(__name__)
 
@@ -103,91 +103,109 @@ class SchedulerService:
             replace_existing=True
         )
 
-    def _refresh_single_stock(self, symbol: str, refresh_type: str = 'info') -> dict:
-        """Refresh a single stock (thread-safe helper for parallel execution)."""
+    def _refresh_single_stock(self, username: str, symbol: str, refresh_type: str = 'info') -> dict:
+        """Refresh a single stock for a specific user (thread-safe)."""
         try:
             with self.app.app_context():
                 from app.services.stock_service import StockService
-                service = StockService(db_session)
-                if refresh_type == 'financial':
-                    count = service.fetch_and_store_financials(symbol)
-                    return {'symbol': symbol, 'success': count > 0, 'error': None}
-                else:
-                    stock = service.refresh_stock_data(symbol)
-                    return {'symbol': symbol, 'success': stock is not None, 'error': None}
+                user_session = create_user_session(username)
+                try:
+                    service = StockService(user_session)
+                    if refresh_type == 'financial':
+                        count = service.fetch_and_store_financials(symbol)
+                        return {'symbol': symbol, 'success': count > 0, 'error': None}
+                    else:
+                        stock = service.refresh_stock_data(symbol)
+                        return {'symbol': symbol, 'success': stock is not None, 'error': None}
+                finally:
+                    user_session.close()
         except Exception as e:
             return {'symbol': symbol, 'success': False, 'error': str(e)}
 
     def _refresh_stock_data_job(self):
-        """刷新股票数据任务（串行执行，每只间隔1秒）"""
-        logger.info("💹 开始执行定时任务: 刷新股票数据")
+        """刷新股票数据任务 — 遍历所有用户"""
+        logger.info("💹 开始执行定时任务: 刷新股票数据 (所有用户)")
 
         try:
             import time as _time
             from app.models.stock import Stock
 
-            with self.app.app_context():
-                stocks = db_session.query(Stock).filter_by(in_pool=True).all()
-                symbols = [s.symbol for s in stocks]
+            for username in get_all_usernames():
+                with self.app.app_context():
+                    user_session = create_user_session(username)
+                    try:
+                        stocks = user_session.query(Stock).filter_by(in_pool=True).all()
+                        symbols = [s.symbol for s in stocks]
+                    finally:
+                        user_session.close()
 
-            if not symbols:
-                logger.warning("股票池为空，跳过刷新")
-                return
+                if not symbols:
+                    logger.info(f"[{username}] 股票池为空，跳过刷新")
+                    continue
 
-            success_count = 0
-            error_count = 0
+                success_count = 0
+                error_count = 0
 
-            for i, symbol in enumerate(symbols):
-                if i > 0:
-                    _time.sleep(1)
-                result = self._refresh_single_stock(symbol, 'info')
-                if result['success']:
-                    success_count += 1
-                else:
-                    error_count += 1
-                    logger.warning(f"刷新 {result['symbol']} 失败: {result.get('error')}")
+                for i, symbol in enumerate(symbols):
+                    if i > 0:
+                        _time.sleep(1)
+                    result = self._refresh_single_stock(username, symbol, 'info')
+                    if result['success']:
+                        success_count += 1
+                    else:
+                        error_count += 1
+                        logger.warning(f"[{username}] 刷新 {result['symbol']} 失败: {result.get('error')}")
 
-            logger.info(
-                f"✅ 股票数据刷新完成: "
-                f"成功 {success_count} 只, 失败 {error_count} 只"
-            )
+                logger.info(
+                    f"[{username}] 股票数据刷新完成: "
+                    f"成功 {success_count} 只, 失败 {error_count} 只"
+                )
+
+            logger.info("✅ 所有用户股票数据刷新完成")
 
         except Exception as e:
             logger.error(f"❌ 股票数据刷新任务异常: {e}", exc_info=True)
 
     def _refresh_financial_data_job(self):
-        """刷新财务数据任务（每周一次，串行执行）"""
-        logger.info("📊 开始执行定时任务: 刷新财务数据")
+        """刷新财务数据任务 — 遍历所有用户"""
+        logger.info("📊 开始执行定时任务: 刷新财务数据 (所有用户)")
 
         try:
             import time as _time
             from app.models.stock import Stock
 
-            with self.app.app_context():
-                stocks = db_session.query(Stock).filter_by(in_pool=True).all()
-                symbols = [s.symbol for s in stocks]
+            for username in get_all_usernames():
+                with self.app.app_context():
+                    user_session = create_user_session(username)
+                    try:
+                        stocks = user_session.query(Stock).filter_by(in_pool=True).all()
+                        symbols = [s.symbol for s in stocks]
+                    finally:
+                        user_session.close()
 
-            if not symbols:
-                logger.warning("股票池为空，跳过刷新")
-                return
+                if not symbols:
+                    logger.info(f"[{username}] 股票池为空，跳过刷新")
+                    continue
 
-            success_count = 0
-            error_count = 0
+                success_count = 0
+                error_count = 0
 
-            for i, symbol in enumerate(symbols):
-                if i > 0:
-                    _time.sleep(1)
-                result = self._refresh_single_stock(symbol, 'financial')
-                if result['success']:
-                    success_count += 1
-                else:
-                    error_count += 1
-                    logger.warning(f"刷新 {result['symbol']} 财务数据失败: {result.get('error')}")
+                for i, symbol in enumerate(symbols):
+                    if i > 0:
+                        _time.sleep(1)
+                    result = self._refresh_single_stock(username, symbol, 'financial')
+                    if result['success']:
+                        success_count += 1
+                    else:
+                        error_count += 1
+                        logger.warning(f"[{username}] 刷新 {result['symbol']} 财务数据失败: {result.get('error')}")
 
-            logger.info(
-                f"✅ 财务数据刷新完成: "
-                f"成功 {success_count} 只, 失败 {error_count} 只"
-            )
+                logger.info(
+                    f"[{username}] 财务数据刷新完成: "
+                    f"成功 {success_count} 只, 失败 {error_count} 只"
+                )
+
+            logger.info("✅ 所有用户财务数据刷新完成")
 
         except Exception as e:
             logger.error(f"❌ 财务数据刷新任务异常: {e}", exc_info=True)

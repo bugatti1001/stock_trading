@@ -850,8 +850,12 @@ def ai_backfill(symbol: str) -> tuple[Response, int]:
     except ValueError as e:
         return error_response(str(e), 400)
     except Exception as e:
+        # Surface auth errors clearly instead of generic 500
+        err_str = str(e)
+        if 'authentication_error' in err_str or 'invalid x-api-key' in err_str:
+            return error_response('Claude API Key 无效，请在登录页重新输入正确的 API Key', 401)
         logger.error(f"[AI Backfill] {symbol} 失败: {e}", exc_info=True)
-        return error_response(str(e), 500)
+        return error_response(err_str, 500)
 
 
 @bp.route('/<symbol>/ai-backfill/confirm', methods=['POST'])

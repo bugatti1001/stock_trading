@@ -1,6 +1,6 @@
-from flask import Flask
+from flask import Flask, session as flask_session
 from flask_cors import CORS
-from app.config.database import db_session
+from app.config.database import db_session, bind_user_session, get_all_engines
 import os
 import logging
 
@@ -49,41 +49,15 @@ def create_app():
     app.register_blueprint(auth_bp)
     app.before_request(login_required)
 
-    # Run database migrations (safe to re-run, skips existing columns)
-    try:
-        from app.config.database import engine
-        from app.models.financial_data import migrate_financial_data_v3
-        migrate_financial_data_v3(engine)
-    except Exception as e:
-        logger.warning(f"数据库迁移检查: {e}")
+    # Bind db_session to the logged-in user's database on each request
+    @app.before_request
+    def _bind_user_db():
+        username = flask_session.get('username')
+        if username:
+            bind_user_session(username)
 
-    try:
-        from app.config.database import engine
-        from migrations.add_market_currency import run as migrate_market_currency
-        migrate_market_currency(engine)
-    except Exception as e:
-        logger.warning(f"市场/货币迁移检查: {e}")
-
-    try:
-        from app.config.database import engine
-        from migrations.add_data_source_column import run as migrate_data_source
-        migrate_data_source(engine)
-    except Exception as e:
-        logger.warning(f"数据来源列迁移检查: {e}")
-
-    try:
-        from app.config.database import engine
-        from migrations.fix_us_stock_currency import run as fix_us_currency
-        fix_us_currency(engine)
-    except Exception as e:
-        logger.warning(f"美股货币/来源修复: {e}")
-
-    try:
-        from app.config.database import engine
-        from migrations.add_include_principles import run as migrate_include_principles
-        migrate_include_principles(engine)
-    except Exception as e:
-        logger.warning(f"对话投资原则字段迁移检查: {e}")
+    # Run database migrations on ALL user databases
+    _run_migrations_all_users()
 
     # Initialize scheduler service
     if app.config.get('SCHEDULER_ENABLED', True):
@@ -114,3 +88,27 @@ def create_app():
         '''
 
     return app
+
+
+def _run_migrations_all_users():
+    """Run all migrations on every user database."""
+    from app.models.financial_data import migrate_financial_data_v3
+    from migrations.add_market_currency import run as migrate_market_currency
+    from migrations.add_data_source_column import run as migrate_data_source
+    from migrations.fix_us_stock_currency import run as fix_us_currency
+    from migrations.add_include_principles import run as migrate_include_principles
+
+    migrations = [
+        ('数据库迁移检查', migrate_financial_data_v3),
+        ('市场/货币迁移检查', migrate_market_currency),
+        ('数据来源列迁移检查', migrate_data_source),
+        ('美股货币/来源修复', fix_us_currency),
+        ('对话投资原则字段迁移检查', migrate_include_principles),
+    ]
+
+    for username, eng in get_all_engines().items():
+        for label, migrate_fn in migrations:
+            try:
+                migrate_fn(eng)
+            except Exception as e:
+                logger.warning(f"[{username}] {label}: {e}")
