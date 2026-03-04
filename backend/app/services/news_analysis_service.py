@@ -12,9 +12,10 @@ AI 驱动的股票新闻分析服务
     新闻分析只保留当天的。过去的新闻没有价值，所有读取接口只返回
     当天的分析记录。每次触发新分析时，先清除所有非今天的旧记录。
 """
+import json
 import logging
 from datetime import datetime, timezone, date, timedelta
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 from app.config.database import db_session
@@ -48,6 +49,13 @@ def _today_filter() -> Tuple:
     )
     return (StockNewsAnalysis.analyzed_at >= today_start,
             StockNewsAnalysis.analyzed_at < tomorrow_start)
+
+
+def _get_existing_today_symbols() -> set:
+    """查询当天已存在分析记录的 symbol 集合"""
+    today_clauses = _today_filter()
+    rows = db_session.query(StockNewsAnalysis.symbol).filter(*today_clauses).all()
+    return {r[0] for r in rows}
 
 
 def _analyze_single_stock(symbol: str, stock_name: str,
@@ -120,64 +128,69 @@ def _analyze_single_stock(symbol: str, stock_name: str,
         return None
 
 
-def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
+def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
     """
-    分析所有股票的新闻，重建 stock_news_analysis 表。
-    使用线程池并行调用 Claude API，大幅缩短总耗时。
+    流式分析所有股票新闻的生成器。
+    每分析完一只股票立即 yield 一个 SSE 事件，前端可实时显示。
+    当天已分析的股票自动跳过，不重复调用 AI。
 
-    Args:
-        news_by_symbol: { "AAPL": [news_item, ...], "MSFT": [...] }
-
-    Returns:
-        { "success": True, "analyses": [...], "total_analyzed": N }
+    Yields:
+        SSE 格式字符串:
+        - data: {"type":"skip","symbol":"...","stock_name":"...","completed":N,"total":M}
+        - data: {"type":"analysis","analysis":{...},"completed":N,"total":M}
+        - data: {"type":"error","symbol":"...","message":"...","completed":N,"total":M}
+        - data: [DONE]
     """
     try:
-        # Step 0: 在主线程（Flask request context）中提前读取 API key
-        # 子线程中无法访问 Flask session，必须在此处读取并传入
         api_key: str = get_anthropic_key()
         if not api_key:
-            return {'success': False, 'error': '未配置 ANTHROPIC_API_KEY，请在登录时输入'}
+            yield f"data: {json.dumps({'type': 'error', 'symbol': '', 'message': '未配置 ANTHROPIC_API_KEY，请在登录时输入', 'completed': 0, 'total': 0}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
-        # Step 0.5: 清除所有非今天的旧分析（过去的新闻没有价值）
         _purge_stale_analyses()
 
-        # Step 1: 删除本次要分析的股票的旧分析
-        symbols_to_analyze: List[str] = [s for s, items in news_by_symbol.items() if items]
-        if symbols_to_analyze:
-            db_session.query(StockNewsAnalysis).filter(
-                StockNewsAnalysis.symbol.in_(symbols_to_analyze)
-            ).delete(synchronize_session='fetch')
-            db_session.flush()
+        # 检查当天已分析的股票
+        existing_symbols: set = _get_existing_today_symbols()
 
         principles_text: str = build_principles_summary()
 
-        # Step 2: 查找股票信息
+        # 查找股票信息
         all_symbols: List[str] = list(news_by_symbol.keys())
         stocks: List[Stock] = db_session.query(Stock).filter(
             Stock.symbol.in_(all_symbols)
         ).all()
         stock_map: Dict[str, Stock] = {s.symbol: s for s in stocks}
 
-        # Step 3: 准备任务列表（过滤掉空新闻的股票）
+        # 分类：跳过 vs 需要分析
+        skip_list: List[Tuple[str, str]] = []  # (symbol, stock_name)
         tasks: List[tuple] = []
         for symbol, news_items in news_by_symbol.items():
             if not news_items:
                 continue
             stock: Optional[Stock] = stock_map.get(symbol)
             stock_name: str = stock.name if stock else symbol
-            tasks.append((symbol, stock_name, news_items))
+            if symbol in existing_symbols:
+                skip_list.append((symbol, stock_name))
+            else:
+                tasks.append((symbol, stock_name, news_items))
+
+        total: int = len(skip_list) + len(tasks)
+        completed: int = 0
+
+        # 先 yield 跳过的股票
+        for symbol, stock_name in skip_list:
+            completed += 1
+            yield f"data: {json.dumps({'type': 'skip', 'symbol': symbol, 'stock_name': stock_name, 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
 
         if not tasks:
-            db_session.commit()
-            return {'success': True, 'analyses': [], 'total_analyzed': 0}
+            yield "data: [DONE]\n\n"
+            return
 
-        # Step 4: 并行调用 Claude API 分析所有股票
+        # 并行调用 Claude API
         logger.info(f"Starting parallel news analysis for {len(tasks)} stocks "
                      f"(model={AI_MODEL}, max_workers={min(NEWS_MAX_PARALLEL, len(tasks))})")
 
-        analysis_results: Dict[str, tuple] = {}  # symbol -> (result_dict, stock_name, news_items)
-
-        # 不使用 with 块，避免 executor.shutdown(wait=True) 在线程卡死时永远阻塞
         executor = ThreadPoolExecutor(max_workers=min(NEWS_MAX_PARALLEL, len(tasks)))
         try:
             future_to_symbol: Dict = {}
@@ -188,63 +201,99 @@ def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
                 )
                 future_to_symbol[future] = (symbol, stock_name, news_items)
 
-            # 超时时间 = 每只股票约 15 秒（含 API 限流重试），留 60 秒余量
             total_timeout = max(len(tasks) * 15, 120) + 60
 
             try:
                 for future in as_completed(future_to_symbol, timeout=total_timeout):
                     symbol, stock_name, news_items = future_to_symbol[future]
+                    completed += 1
                     try:
                         result: Optional[Dict] = future.result(timeout=10)
                         if result:
-                            analysis_results[symbol] = (result, stock_name, news_items)
+                            # 逐条写入 DB
+                            stock = stock_map.get(symbol)
+                            sources: List[Dict] = [
+                                {'title': n.get('title', ''), 'url': n.get('url', ''),
+                                 'source': n.get('source', '')}
+                                for n in news_items
+                            ]
+                            analysis = StockNewsAnalysis(
+                                stock_id=stock.id if stock else None,
+                                symbol=symbol,
+                                stock_name=stock_name,
+                                sentiment=result.get('sentiment', 'neutral'),
+                                summary=result.get('summary', ''),
+                                key_events=result.get('key_events', []),
+                                principle_impacts=result.get('principle_impacts', []),
+                                news_sources=sources,
+                                analyzed_at=datetime.now(timezone.utc),
+                            )
+                            db_session.add(analysis)
+                            db_session.commit()
+                            yield f"data: {json.dumps({'type': 'analysis', 'analysis': analysis.to_dict(), 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
                         else:
                             logger.warning(f"Analysis failed for {symbol}, skipping")
+                            yield f"data: {json.dumps({'type': 'error', 'symbol': symbol, 'message': '分析失败（AI 返回空结果）', 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
                     except Exception as e:
                         logger.error(f"Analysis thread error for {symbol}: {e}")
+                        yield f"data: {json.dumps({'type': 'error', 'symbol': symbol, 'message': str(e), 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
             except FuturesTimeoutError:
                 pending = [s for f, (s, _, _) in future_to_symbol.items() if not f.done()]
-                logger.warning(f"News analysis timed out ({total_timeout}s). "
-                               f"Completed {len(analysis_results)}, pending: {pending}")
-                # 取消尚未开始的任务
+                logger.warning(f"News analysis timed out ({total_timeout}s). Pending: {pending}")
                 for f in future_to_symbol:
                     f.cancel()
+                for sym in pending:
+                    completed += 1
+                    yield f"data: {json.dumps({'type': 'error', 'symbol': sym, 'message': '分析超时', 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
         finally:
-            # wait=False: 不阻塞等待卡死的线程，让 Flask 能立即返回响应
             executor.shutdown(wait=False, cancel_futures=True)
 
-        # Step 5: 将结果写入数据库（在主线程中操作 db_session）
-        created: List[StockNewsAnalysis] = []
-        for symbol, (result, stock_name, news_items) in analysis_results.items():
-            stock = stock_map.get(symbol)
-            sources: List[Dict] = [
-                {'title': n.get('title', ''), 'url': n.get('url', ''),
-                 'source': n.get('source', '')}
-                for n in news_items
-            ]
+        yield "data: [DONE]\n\n"
 
-            analysis = StockNewsAnalysis(
-                stock_id=stock.id if stock else None,
-                symbol=symbol,
-                stock_name=stock_name,
-                sentiment=result.get('sentiment', 'neutral'),
-                summary=result.get('summary', ''),
-                key_events=result.get('key_events', []),
-                principle_impacts=result.get('principle_impacts', []),
-                news_sources=sources,
-                analyzed_at=datetime.now(timezone.utc),
-            )
-            db_session.add(analysis)
-            created.append(analysis)
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"analyze_news_stream failed: {e}", exc_info=True)
+        yield f"data: {json.dumps({'type': 'error', 'symbol': '', 'message': str(e), 'completed': 0, 'total': 0}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
 
-        db_session.commit()
-        logger.info(f"News analysis complete: {len(created)} stocks analyzed")
+
+def analyze_all_news(news_by_symbol: Dict[str, List[Dict]]) -> Dict:
+    """
+    分析所有股票的新闻（向后兼容的同步包装器）。
+    内部消费 analyze_news_stream() 生成器，收集结果返回 dict。
+
+    Args:
+        news_by_symbol: { "AAPL": [news_item, ...], "MSFT": [...] }
+
+    Returns:
+        { "success": True, "analyses": [...], "total_analyzed": N }
+    """
+    try:
+        analyses = []
+        for event_str in analyze_news_stream(news_by_symbol):
+            # 解析 SSE 事件
+            line = event_str.strip()
+            if not line.startswith('data: '):
+                continue
+            payload = line[6:]
+            if payload == '[DONE]':
+                break
+            try:
+                event = json.loads(payload)
+                if event.get('type') == 'analysis' and event.get('analysis'):
+                    analyses.append(event['analysis'])
+                elif event.get('type') == 'error' and event.get('message'):
+                    # 如果是全局错误（无 symbol），返回失败
+                    if not event.get('symbol'):
+                        return {'success': False, 'error': event['message']}
+            except json.JSONDecodeError:
+                continue
+
         return {
             'success': True,
-            'analyses': [a.to_dict() for a in created],
-            'total_analyzed': len(created),
+            'analyses': analyses,
+            'total_analyzed': len(analyses),
         }
-
     except Exception as e:
         db_session.rollback()
         logger.error(f"analyze_all_news failed: {e}", exc_info=True)

@@ -5,13 +5,13 @@ Media/News API Routes
 import json
 import logging
 from datetime import date
-from flask import Blueprint, request, Response
+from flask import Blueprint, request, Response, stream_with_context
 
 from app.config.database import db_session
 from app.models.stock import Stock
 from app.scrapers.google_news_scraper import fetch_news_for_stocks
 from app.services.news_analysis_service import (
-    analyze_all_news, get_all_analyses, delete_analysis
+    analyze_all_news, analyze_news_stream, get_all_analyses, delete_analysis
 )
 from app.utils.response import success_response, error_response
 
@@ -76,6 +76,35 @@ def trigger_analysis():
         return success_response(**{k: v for k, v in result.items() if k != 'success'})
     except Exception as e:
         logger.error(f"trigger_analysis error: {e}", exc_info=True)
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/media/analyze/stream', methods=['POST'])
+def trigger_analysis_stream():
+    """流式 AI 新闻分析（SSE）。每分析完一只股票立即推送事件。"""
+    try:
+        data = request.get_json()
+        if not data or not data.get('news_by_symbol'):
+            return error_response('缺少 news_by_symbol 数据', 400)
+
+        news_by_symbol = {s: items for s, items in data['news_by_symbol'].items() if items}
+        if not news_by_symbol:
+            return error_response('所选股票暂无新闻，跳过分析', 400)
+
+        def generate():
+            yield from analyze_news_stream(news_by_symbol)
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+                'Connection': 'keep-alive',
+            }
+        )
+    except Exception as e:
+        logger.error(f"trigger_analysis_stream error: {e}", exc_info=True)
         return error_response(str(e), 500)
 
 

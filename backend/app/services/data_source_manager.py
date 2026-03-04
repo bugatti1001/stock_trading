@@ -607,7 +607,6 @@ class DataSourceManager:
     def _fetch_financials_from_sec(self, symbol: str, years: int = 5) -> Optional[List[Dict]]:
         """从SEC EDGAR获取财务数据，支持 10-K 和 20-F（外国私人发行人）"""
         try:
-            # 先将 ticker 转换为 CIK（之前直接传 symbol 导致 404）
             cik = self.sec_scraper.get_company_cik(symbol)
             if not cik:
                 raise ValueError(f"SEC EDGAR未找到 {symbol} 的CIK编号")
@@ -623,6 +622,10 @@ class DataSourceManager:
             if not filings:
                 raise ValueError(f"SEC EDGAR未找到 {symbol} 的10-K或20-F报告")
 
+            # 获取 XBRL 公司财务指标
+            facts = self.sec_scraper.get_company_facts(cik)
+            metrics = self.sec_scraper.extract_key_metrics(facts) if facts else {}
+
             financial_data_list = []
             for filing in filings:
                 try:
@@ -633,9 +636,14 @@ class DataSourceManager:
                             'fiscal_year': year,
                             'period': 'FY',
                             'report_date': filing_date,
+                            'currency': 'USD',
                             'data_source': 'SEC EDGAR',
-                            'filing_url': filing.get('document_url') or filing.get('filingDetailUrl')
+                            'filing_url': filing.get('document_url') or filing.get('filingDetailUrl'),
                         }
+                        # 将 XBRL 指标合并到最新年度的记录中
+                        # （SEC XBRL API 返回的是最新值，映射到最近的 filing）
+                        if metrics and not financial_data_list:
+                            fin_dict.update(metrics)
                         financial_data_list.append(fin_dict)
                 except Exception as e:
                     logger.warning(f"处理 {filing.get('filing_date')} 的 {filing_type} 失败: {e}")

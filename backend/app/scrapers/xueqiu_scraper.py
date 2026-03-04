@@ -374,14 +374,16 @@ class XueqiuScraper:
                     from datetime import datetime as dt
                     rd = dt.fromtimestamp(report_date / 1000)
                     fiscal_year = rd.year
-                    # 如果没有 month_num，通过日期月份判断
-                    if month_num is None:
+                    # 仅当 is_annual 尚未确定时，才用日期月份做 fallback 判断
+                    # （美股 FY 可能不在12月结束，如 NVDA 在1月结束，
+                    #   此时 report_type_code 已正确标记为年报，不应被覆盖）
+                    if not is_annual and month_num is None:
                         is_annual = rd.month == 12 or (rd.month == 3 and detect_market(symbol) == MARKET_HK)
                 elif isinstance(report_date, str):
                     try:
                         rd = datetime.fromisoformat(report_date)
                         fiscal_year = rd.year
-                        if month_num is None:
+                        if not is_annual and month_num is None:
                             is_annual = rd.month == 12
                     except (ValueError, TypeError):
                         pass

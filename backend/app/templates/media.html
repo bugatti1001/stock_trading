@@ -410,6 +410,90 @@ function updatePickerCount() {
     document.getElementById('confirmAnalyzeBtn').disabled = checked === 0;
 }
 
+// ── Append single analysis card (streaming) ────────
+function buildAnalysisCardHtml(a) {
+    const sentimentMap = { bullish: '看涨', bearish: '看跌', neutral: '中性' };
+    const sentimentClass = `sentiment-${a.sentiment || 'neutral'}`;
+    const sentimentLabel = sentimentMap[a.sentiment] || a.sentiment || '未知';
+
+    const eventsHtml = (a.key_events || []).map(e =>
+        `<li class="small">${escHtml(e)}</li>`
+    ).join('');
+
+    const impactsHtml = (a.principle_impacts || []).map(p =>
+        `<li class="small">${escHtml(p)}</li>`
+    ).join('');
+
+    const sourcesHtml = (a.news_sources || []).slice(0, 5).map(s =>
+        `<a href="${escHtml(s.url)}" target="_blank" rel="noopener"
+            class="small text-muted d-block text-truncate"
+            title="${escHtml(s.title)}">${escHtml(s.title)}</a>`
+    ).join('');
+
+    const analyzedTime = a.analyzed_at
+        ? new Date(a.analyzed_at).toLocaleString('zh-CN')
+        : '';
+
+    return `
+    <div class="analysis-card mb-3" id="analysis-${escHtml(a.symbol)}" data-symbol="${escHtml(a.symbol)}">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+                <span class="fw-bold">${escHtml(a.symbol)}</span>
+                <span class="text-muted small ms-1">${escHtml(a.stock_name || '')}</span>
+                <span class="sentiment-badge ${sentimentClass} ms-2">${sentimentLabel}</span>
+            </div>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteAnalysis(${a.id})"
+                    title="删除此分析（AI 上下文将不再引用）">
+                <i class="bi bi-trash"></i>
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="mb-2">${marked.parse(a.summary || '')}</div>
+            ${eventsHtml ? `
+            <div class="mb-2">
+                <strong class="small text-primary"><i class="bi bi-lightning me-1"></i>关键事件</strong>
+                <ul class="mb-1">${eventsHtml}</ul>
+            </div>` : ''}
+            ${impactsHtml ? `
+            <div class="mb-2">
+                <strong class="small text-warning"><i class="bi bi-exclamation-triangle me-1"></i>原则影响</strong>
+                <ul class="mb-1">${impactsHtml}</ul>
+            </div>` : ''}
+            ${sourcesHtml ? `
+            <div class="border-top pt-1 mt-2">
+                <strong class="small text-muted"><i class="bi bi-link-45deg me-1"></i>新闻来源</strong>
+                ${sourcesHtml}
+            </div>` : ''}
+            ${analyzedTime ? `
+            <div class="text-muted small mt-2">
+                <i class="bi bi-clock me-1"></i>分析时间: ${analyzedTime}
+            </div>` : ''}
+        </div>
+    </div>`;
+}
+
+function appendAnalysisCard(a) {
+    const container = document.getElementById('analysisList');
+    const empty = document.getElementById('analysisEmpty');
+
+    // 确保容器可见
+    empty.classList.add('d-none');
+    container.classList.remove('d-none');
+
+    // 如果同 symbol 卡片已存在则替换，否则追加
+    const existing = document.getElementById('analysis-' + a.symbol);
+    const html = buildAnalysisCardHtml(a);
+    if (existing) {
+        existing.outerHTML = html;
+    } else {
+        container.insertAdjacentHTML('beforeend', html);
+    }
+
+    // 滚动到新卡片
+    const card = document.getElementById('analysis-' + a.symbol);
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 async function confirmAnalyze() {
     try {
         const selected = Array.from(document.querySelectorAll('.stock-pick-cb:checked')).map(cb => cb.value);
@@ -435,25 +519,87 @@ async function confirmAnalyze() {
         const btn = document.getElementById('analyzeBtn');
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>AI 分析中...';
-        showStatus(`AI 正在分析 ${Object.keys(subset).length} 只股票的新闻（结合投资原则），请稍候...`, true);
+        showStatus(`AI 正在分析 ${Object.keys(subset).length} 只股票的新闻（结合投资原则）...`, true);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 600000); // 10min timeout
 
-        const res = await fetch('/api/media/analyze', {
+        const res = await fetch('/api/media/analyze/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ news_by_symbol: subset }),
             signal: controller.signal
         });
         clearTimeout(timeoutId);
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error || '分析失败');
 
-        // Reload all analyses (includes previously existing ones for non-selected stocks)
-        await loadExistingAnalyses();
-        const msg = data.message || `分析完成！本次分析 ${data.total_analyzed} 只股票的新闻`;
-        showStatus(msg, false);
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${res.status}`);
+        }
+
+        // 使用 ReadableStream 消费 SSE
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let analysisCount = 0;
+        let skipCount = 0;
+        let errorCount = 0;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            // 保留最后一个可能不完整的行
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith('data: ')) continue;
+                const payload = trimmed.slice(6);
+
+                if (payload === '[DONE]') {
+                    // 流结束，更新筛选条件和计数
+                    renderAnalysisFilters(cachedAnalyses);
+                    document.getElementById('analysisCount').textContent = cachedAnalyses.length;
+                    const parts = [];
+                    if (analysisCount > 0) parts.push(`${analysisCount} 只已分析`);
+                    if (skipCount > 0) parts.push(`${skipCount} 只今日已分析(跳过)`);
+                    if (errorCount > 0) parts.push(`${errorCount} 只失败`);
+                    showStatus(`分析完成！${parts.join('，')}`, false);
+                    continue;
+                }
+
+                try {
+                    const event = JSON.parse(payload);
+                    const progress = event.total > 0 ? `${event.completed}/${event.total}` : '';
+
+                    if (event.type === 'analysis') {
+                        analysisCount++;
+                        const a = event.analysis;
+                        // 更新 cachedAnalyses
+                        const idx = cachedAnalyses.findIndex(x => x.symbol === a.symbol);
+                        if (idx >= 0) cachedAnalyses[idx] = a;
+                        else cachedAnalyses.push(a);
+                        // 立即显示卡片
+                        appendAnalysisCard(a);
+                        const name = a.stock_name || a.symbol;
+                        showStatus(`${progress} 已完成: ${name}`, true);
+                    } else if (event.type === 'skip') {
+                        skipCount++;
+                        const name = event.stock_name || event.symbol;
+                        showStatus(`${progress} 今日已分析，跳过: ${name}`, true);
+                    } else if (event.type === 'error') {
+                        errorCount++;
+                        const name = event.symbol || '未知';
+                        showStatus(`${progress} 分析失败: ${name} - ${event.message}`, true);
+                    }
+                } catch (parseErr) {
+                    console.warn('SSE parse error:', parseErr, payload);
+                }
+            }
+        }
     } catch (e) {
         console.error('confirmAnalyze error:', e);
         const msg = e.name === 'AbortError' ? 'AI 分析超时，请稍后重试' : e.message;

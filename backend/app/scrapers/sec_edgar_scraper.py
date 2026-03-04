@@ -275,7 +275,8 @@ class SECEdgarScraper:
 
     def extract_key_metrics(self, company_facts: Dict) -> Dict:
         """
-        Extract key financial metrics from company facts
+        Extract key financial metrics from company facts (XBRL).
+        Covers income statement, balance sheet, cash flow, and per-share data.
 
         Args:
             company_facts: Raw company facts data from SEC API
@@ -286,50 +287,101 @@ class SECEdgarScraper:
         metrics = {}
 
         try:
-            # US-GAAP (Generally Accepted Accounting Principles) data
             us_gaap = company_facts.get('facts', {}).get('us-gaap', {})
 
-            # Revenue
-            if 'Revenues' in us_gaap:
-                metrics['revenue'] = self._get_latest_value(us_gaap['Revenues'])
-            elif 'RevenueFromContractWithCustomerExcludingAssessedTax' in us_gaap:
-                metrics['revenue'] = self._get_latest_value(
-                    us_gaap['RevenueFromContractWithCustomerExcludingAssessedTax']
-                )
+            def _first(*concepts):
+                """Return latest 10-K value from the first available concept."""
+                for c in concepts:
+                    if c in us_gaap:
+                        v = self._get_latest_value(us_gaap[c])
+                        if v is not None:
+                            return v
+                return None
 
-            # Net Income
-            if 'NetIncomeLoss' in us_gaap:
-                metrics['net_income'] = self._get_latest_value(us_gaap['NetIncomeLoss'])
+            # ── Income Statement ──
+            metrics['revenue'] = _first(
+                'Revenues',
+                'RevenueFromContractWithCustomerExcludingAssessedTax',
+                'SalesRevenueNet',
+            )
+            metrics['cost_of_revenue'] = _first(
+                'CostOfRevenue',
+                'CostOfGoodsAndServicesSold',
+                'CostOfGoodsSold',
+            )
+            metrics['operating_income'] = _first(
+                'OperatingIncomeLoss',
+            )
+            metrics['net_income'] = _first(
+                'NetIncomeLoss',
+            )
+            metrics['net_income_to_parent'] = _first(
+                'NetIncomeLossAvailableToCommonStockholdersBasic',
+                'NetIncomeLossAttributableToParent',
+            )
+            metrics['rd_expense'] = _first(
+                'ResearchAndDevelopmentExpense',
+                'ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost',
+            )
+            metrics['selling_expense'] = _first(
+                'SellingGeneralAndAdministrativeExpense',
+                'SellingAndMarketingExpense',
+            )
+            metrics['finance_cost'] = _first(
+                'InterestExpense',
+                'InterestExpenseDebt',
+            )
 
-            # Total Assets
-            if 'Assets' in us_gaap:
-                metrics['total_assets'] = self._get_latest_value(us_gaap['Assets'])
+            # ── Balance Sheet ──
+            metrics['total_assets'] = _first('Assets')
+            metrics['stockholders_equity'] = _first(
+                'StockholdersEquity',
+                'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest',
+            )
+            metrics['cash'] = _first(
+                'CashAndCashEquivalentsAtCarryingValue',
+                'CashCashEquivalentsAndShortTermInvestments',
+            )
+            metrics['accounts_receivable'] = _first(
+                'AccountsReceivableNetCurrent',
+                'AccountsReceivableNet',
+            )
+            metrics['inventory'] = _first('InventoryNet', 'Inventories')
+            metrics['accounts_payable'] = _first('AccountsPayableCurrent')
+            metrics['current_liabilities'] = _first('LiabilitiesCurrent')
+            metrics['non_current_assets'] = _first(
+                'NoncurrentAssets',
+                'AssetsNoncurrent',
+                'PropertyPlantAndEquipmentNet',
+            )
+            metrics['short_term_borrowings'] = _first(
+                'ShortTermBorrowings',
+                'ShortTermDebtCurrent',
+            )
+            metrics['long_term_borrowings'] = _first(
+                'LongTermDebt',
+                'LongTermDebtNoncurrent',
+            )
 
-            # Stockholders Equity
-            if 'StockholdersEquity' in us_gaap:
-                metrics['stockholders_equity'] = self._get_latest_value(us_gaap['StockholdersEquity'])
+            # ── Cash Flow ──
+            metrics['operating_cash_flow'] = _first(
+                'NetCashProvidedByUsedInOperatingActivities',
+            )
+            capex = _first('PaymentsToAcquirePropertyPlantAndEquipment')
+            metrics['capital_expenditure'] = abs(capex) if capex is not None else None
 
-            # Cash and Cash Equivalents
-            if 'CashAndCashEquivalentsAtCarryingValue' in us_gaap:
-                metrics['cash'] = self._get_latest_value(us_gaap['CashAndCashEquivalentsAtCarryingValue'])
+            # ── Per Share / Shareholder ──
+            metrics['shares_outstanding'] = _first(
+                'CommonStockSharesOutstanding',
+                'EntityCommonStockSharesOutstanding',
+            )
+            metrics['dividends_per_share'] = _first(
+                'CommonStockDividendsPerShareDeclared',
+                'CommonStockDividendsPerShareCashPaid',
+            )
 
-            # Operating Cash Flow
-            if 'NetCashProvidedByUsedInOperatingActivities' in us_gaap:
-                metrics['operating_cash_flow'] = self._get_latest_value(
-                    us_gaap['NetCashProvidedByUsedInOperatingActivities']
-                )
-
-            # Current Liabilities
-            if 'LiabilitiesCurrent' in us_gaap:
-                metrics['current_liabilities'] = self._get_latest_value(us_gaap['LiabilitiesCurrent'])
-
-            # Accounts Receivable
-            if 'AccountsReceivableNetCurrent' in us_gaap:
-                metrics['accounts_receivable'] = self._get_latest_value(us_gaap['AccountsReceivableNetCurrent'])
-
-            # Inventory
-            if 'InventoryNet' in us_gaap:
-                metrics['inventory'] = self._get_latest_value(us_gaap['InventoryNet'])
+            # Remove None values
+            metrics = {k: v for k, v in metrics.items() if v is not None}
 
         except Exception as e:
             print(f"Error extracting metrics: {str(e)}")
