@@ -334,33 +334,39 @@ class SECEdgarScraper:
 
             # ── Balance Sheet ──
             metrics['total_assets'] = _first('Assets')
-            metrics['stockholders_equity'] = _first(
+            metrics['total_equity'] = _first(
                 'StockholdersEquity',
-                'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest',
             )
-            metrics['cash'] = _first(
+            metrics['cash_and_equivalents'] = _first(
                 'CashAndCashEquivalentsAtCarryingValue',
-                'CashCashEquivalentsAndShortTermInvestments',
+                'CashAndCashEquivalentsAtFairValue',
             )
             metrics['accounts_receivable'] = _first(
                 'AccountsReceivableNetCurrent',
                 'AccountsReceivableNet',
             )
             metrics['inventory'] = _first('InventoryNet', 'Inventories')
+            metrics['investments'] = _first(
+                'ShortTermInvestments',
+                'MarketableSecuritiesCurrent',
+                'AvailableForSaleSecuritiesCurrent',
+                'TradingSecuritiesCurrent',
+                'InvestmentsCurrent',
+            )
             metrics['accounts_payable'] = _first('AccountsPayableCurrent')
             metrics['current_liabilities'] = _first('LiabilitiesCurrent')
             metrics['non_current_assets'] = _first(
                 'NoncurrentAssets',
                 'AssetsNoncurrent',
-                'PropertyPlantAndEquipmentNet',
             )
-            metrics['short_term_borrowings'] = _first(
-                'ShortTermBorrowings',
-                'ShortTermDebtCurrent',
-            )
+            # short_term = pure ST + current portion of LTD
+            st_pure = _first('ShortTermBorrowings', 'ShortTermDebtCurrent')
+            current_ltd = _first('LongTermDebtCurrent', 'CurrentPortionOfLongTermDebt')
+            if st_pure is not None or current_ltd is not None:
+                metrics['short_term_borrowings'] = (st_pure or 0) + (current_ltd or 0)
             metrics['long_term_borrowings'] = _first(
-                'LongTermDebt',
                 'LongTermDebtNoncurrent',
+                'LongTermDebt',
             )
 
             # ── Cash Flow ──

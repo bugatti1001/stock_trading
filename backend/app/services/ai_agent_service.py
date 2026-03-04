@@ -392,7 +392,10 @@ def generate_dashboard_insight() -> str:
     if stocks_summary == "（暂无持仓股票数据）":
         return '📭 股票池暂无数据，请先在「股票池」中添加股票并刷新财务数据。'
 
-    prompt: str = f"""你是一名基本面投资助手。请根据以下信息，给出今日持仓关注建议。
+    from datetime import datetime, timezone
+    today_str: str = datetime.now(timezone.utc).strftime('%Y-%m-%d (%A)')
+
+    prompt: str = f"""你是一名基本面投资助手。请根据以下信息，给出今日（{today_str}）持仓关注建议。
 
 【持仓股票数据】
 {stocks_summary}
@@ -409,6 +412,7 @@ def generate_dashboard_insight() -> str:
 3. 一句话总结当前持仓整体质量
 
 要求：
+- 今天是 {today_str}，请结合当日新闻热点和市场环境给出有时效性的建议
 - 只基于上方数据作出判断，数据不足时说明
 - 用 Markdown 格式，简洁专业，不超过 300 字
 - 标题用 **加粗**，用 emoji 辅助区分（✅ 关注 / ⚠️ 警惕）

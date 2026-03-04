@@ -67,13 +67,13 @@ class FinancialData(BaseModel):
     cash_and_equivalents = Column(Float)                    # 货币资金 / Cash & Equivalents  (Raw AB列)
     accounts_receivable = Column(Float)                     # 应收账款 / Accounts Receivable  (Raw AC列)
     inventory = Column(Float)                               # 库存 / Inventory  (Raw AD列)
-    investments = Column(Float)                             # 投资资产 / Investments  (Raw AE列)
+    investments = Column(Float)                             # 可变现金融资产(不含长期股权投资) / Liquid investments (excl. strategic equity)
     accounts_payable = Column(Float)                        # 应付账款 / Accounts Payable  (Raw AF列)
     contract_liability_change_pct = Column(Float)           # 合同负债变动% / Contract Liability Change %  (Raw AG列)
     short_term_borrowings = Column(Float)                   # 短期贷款 / Short-term Borrowings  (Raw AH列)
     long_term_borrowings = Column(Float)                    # 长期贷款 / Long-term Borrowings  (Raw AI列)
     total_assets = Column(Float)                            # 总资产 / Total Assets  (Raw AJ列)
-    total_equity = Column(Float)                            # 净资产 / Total Equity (Net Assets)  (Raw AK列)
+    total_equity = Column(Float)                            # 归母权益 / Equity to parent (excl. minority interest)
     non_current_assets = Column(Float)                      # 非流动资产 / Non-current Assets  (Raw AL列)
     current_liabilities = Column(Float)                     # 流动负债 / Current Liabilities  (Raw AM列)
 
@@ -86,7 +86,7 @@ class FinancialData(BaseModel):
     # ══════════════════════════════════════════════════════════
     #  Per Share & Shareholder / 每股指标与股东数据
     # ══════════════════════════════════════════════════════════
-    shares_outstanding = Column(Float)                      # 总股本(亿股) / Shares Outstanding (100M)  (Raw D/E列)
+    shares_outstanding = Column(Float)                      # 总股本(实际股数) / Shares Outstanding (actual number)
     dividends_per_share = Column(Float)                     # 每股分红 / Dividends per Share  (Raw I列)
     nav_per_share = Column(Float)                           # 每股净资产 / NAV per Share  (Raw F列, = total_equity/shares)
 

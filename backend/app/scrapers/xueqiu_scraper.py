@@ -483,11 +483,10 @@ class XueqiuScraper:
                                                       'trrb'),
                 'inventory': self._safe_val(bal, 'inventories', 'inventory',
                                             'iv'),
-                'investments': self._safe_val(bal, 'lt_equity_invest',
-                                              'long_term_equity_invest',
-                                              'equity_and_othr_invest',      # 美股: 权益及其他投资
-                                              'st_invest',                   # 美股: 短期投资
-                                              'inv', 'fina'),
+                'investments': self._safe_val(bal, 'st_invest',              # 短期投资 (liquid)
+                                              'fina',                    # 交易性金融资产 (trading securities)
+                                              'equity_and_othr_invest',  # 美股: 权益及其他投资
+                                              'inv'),                    # 通用投资; 排除 lt_equity_invest(战略性长期股权投资)
                 'accounts_payable': self._safe_val(bal, 'accounts_payable',
                                                    'accounts_pay',
                                                    'trpy'),

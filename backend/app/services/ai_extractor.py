@@ -56,25 +56,25 @@ You are a professional financial analyst. Extract key financial data from the re
 - net_income: 净利润 / Net Income (Net Profit)
 - net_income_to_parent: 归属于母公司股东的净利润 / Net Income attributable to parent company shareholders
 - adjusted_net_income: 扣除非经常性损益后的净利润 / Adjusted Net Income (excluding non-recurring items)
-- selling_expense: 销售费用 / Selling & Distribution Expense
-- admin_expense: 管理费用（含一般管理） / General & Administrative Expense
+- selling_expense: 销售费用（美股通常为 SG&A 合并值，含管理费用）/ Selling Expense (for US stocks, use SG&A if not separately reported)
+- admin_expense: 管理费用（美股如已计入 selling_expense 的 SG&A 中则填 null）/ G&A Expense (null if already included in SG&A above)
 - rd_expense: 研发费用 / Research & Development Expense
 - finance_cost: 财务费用/融资成本/利息支出净额 / Finance Cost / Net Interest Expense
 - cash_and_equivalents: 货币资金（现金及现金等价物 + 受限制现金）/ Cash and Cash Equivalents (incl. restricted cash)
 - accounts_receivable: 应收账款 + 应收票据 / Accounts Receivable (incl. notes receivable, trade receivables)
 - inventory: 存货 / Inventory
-- investments: 交易性金融资产 + 其他权益工具投资 + 长期股权投资 + 可供出售金融资产 / Total investments (trading financial assets + equity investments + long-term equity investments + available-for-sale)
+- investments: 可变现金融资产（不含长期股权投资）/ Liquid financial investments: short-term investments + marketable securities + trading securities + available-for-sale securities. EXCLUDE long-term equity investments in subsidiaries/associates (strategic holdings)
 - accounts_payable: 应付账款 + 应付票据 / Accounts Payable (incl. notes payable, trade payables)
 - contract_liability_change_pct: 合同负债（预收款项）同比变动百分比，如增长20%填0.2 / Contract Liability (advances from customers) YoY change as decimal, e.g., 20% increase = 0.2
 - short_term_borrowings: 短期借款（含一年内到期的长期借款）/ Short-term Borrowings (incl. current portion of long-term debt)
 - long_term_borrowings: 长期借款 + 应付债券 / Long-term Borrowings (incl. bonds payable, long-term debt)
 - total_assets: 资产总计 / Total Assets
-- total_equity: 所有者权益合计（= 净资产）/ Total Equity = Net Assets (including minority interest)
+- total_equity: 归属于母公司股东权益（不含少数股东权益）/ Stockholders' Equity attributable to parent (EXCLUDE minority/non-controlling interest)
 - non_current_assets: 非流动资产合计 / Total Non-current Assets
 - current_liabilities: 流动负债合计 / Total Current Liabilities
 - operating_cash_flow: 经营活动产生的现金流量净额 / Net Cash from Operating Activities
 - capital_expenditure: 购建固定资产、无形资产和其他长期资产支付的现金（取正数）/ Capital Expenditure (positive number) / Purchases of property, plant & equipment
-- shares_outstanding: 总股本，单位亿股 / Total Shares Outstanding, in hundred millions (亿)
+- shares_outstanding: 总股本（实际股数）/ Total Shares Outstanding (actual number, e.g. 1090000000)
 - dividends_per_share: 每股现金分红（含中期 + 末期）/ Cash Dividends per Share (interim + final)
 - nav_per_share: 每股净资产 = total_equity / shares_outstanding / NAV per Share
 

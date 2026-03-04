@@ -79,7 +79,7 @@ def compute_single_period_kpis(fd) -> Dict[str, Any]:
     if fd.total_assets is not None and fd.current_liabilities is not None:
         kpis['total_assets_minus_current_liab'] = fd.total_assets - fd.current_liabilities
 
-    # net_cash 净现金 = 货币资金 + 投资 - 短期贷款 - 长期贷款  (BC列)
+    # net_cash 净现金 = 货币资金 + 金融投资(可变现) - 短期贷款 - 长期贷款  (BC列)
     cash = fd.cash_and_equivalents or 0
     inv = fd.investments or 0
     stb = fd.short_term_borrowings or 0

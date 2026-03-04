@@ -436,7 +436,7 @@ def build_stock_text_summary(stock: Stock, fins: List[FinancialData]) -> str:
     if latest.cash_and_equivalents is not None:
         fh_parts.append(f"货币资金:{latest.cash_and_equivalents/1e9:.2f}B")
     if latest.investments is not None:
-        fh_parts.append(f"投资:{latest.investments/1e9:.2f}B")
+        fh_parts.append(f"金融投资:{latest.investments/1e9:.2f}B")
     if latest.short_term_borrowings is not None:
         fh_parts.append(f"短期借款:{latest.short_term_borrowings/1e9:.2f}B")
     if latest.long_term_borrowings is not None:

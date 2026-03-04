@@ -152,32 +152,32 @@ Extract missing annual financial data from the web page content below.
 - net_income: 净利润
 - net_income_to_parent: 归母净利润 (same as net_income for US stocks)
 - adjusted_net_income: 扣非净利润
-- selling_expense: 销售费用
-- admin_expense: 管理费用
+- selling_expense: 销售费用（美股通常为 SG&A 合并值，含管理费用）/ Selling Expense (for US stocks, use SG&A if not separately reported)
+- admin_expense: 管理费用（美股如已计入 selling_expense 的 SG&A 中则填 null）/ G&A Expense (null if already included in SG&A above)
 - rd_expense: 研发费用
 - finance_cost: 财务费用/利息支出
 - cash_and_equivalents: 现金及等价物
 - accounts_receivable: 应收账款
 - inventory: 存货
-- investments: 投资资产 (short-term + long-term investments)
+- investments: 可变现金融资产（不含长期股权投资）/ Liquid financial investments: short-term investments + marketable securities + trading securities + available-for-sale securities. EXCLUDE long-term equity investments in subsidiaries/associates (strategic holdings)
 - accounts_payable: 应付账款
 - contract_liability_change_pct: 合同负债同比变动(小数, 0.2=20%)
-- short_term_borrowings: 短期借款
-- long_term_borrowings: 长期借款
+- short_term_borrowings: 短期借款（含一年内到期的长期借款）/ Short-term Borrowings (incl. current portion of long-term debt)
+- long_term_borrowings: 长期借款 + 应付债券（不含一年内到期部分）/ Long-term Debt (incl. bonds payable, excl. current portion)
 - total_assets: 总资产
-- total_equity: 净资产/股东权益
+- total_equity: 归属于母公司股东权益（不含少数股东权益）/ Stockholders' Equity attributable to parent (EXCLUDE minority/non-controlling interest)
 - non_current_assets: 非流动资产
 - current_liabilities: 流动负债
 - operating_cash_flow: 经营现金流
 - capital_expenditure: 资本开支(正数)
-- shares_outstanding: 总股本(亿股, 1亿=100M, so 24.6B shares = 246亿)
+- shares_outstanding: 总股本(实际股数) / Total shares outstanding (actual number, e.g. 1090000000)
 - dividends_per_share: 每股分红
 - nav_per_share: 每股净资产
 
 要求 / Requirements:
 1. 所有金额为实际完整数值 / All monetary values in ACTUAL full numbers (not millions/billions)
    e.g. "$60.9B" → 60900000000, "$1.2M" → 1200000
-2. shares_outstanding 单位亿股 / in hundred millions (e.g. 24.6B shares = 246)
+2. shares_outstanding 为实际股数 / actual number of shares (e.g. 1.09B shares = 1090000000)
 3. 找不到填 null / Use null if not found in the data
 4. 只返回 JSON / Return ONLY the JSON object below, no other text
 
