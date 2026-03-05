@@ -86,7 +86,8 @@ def _get_conversation_history(conversation_id: int, limit: int = 20) -> List[Dic
     if not conv:
         return []
 
-    messages: List[Message] = (conv.messages
+    messages: List[Message] = (db_session.query(Message)
+                .filter_by(conversation_id=conversation_id)
                 .order_by(Message.created_at.desc())
                 .limit(limit)
                 .all())
