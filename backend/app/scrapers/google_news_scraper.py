@@ -72,6 +72,15 @@ class NewsSearchError(Exception):
 
 
 def _get_finnhub_key() -> str:
+    """从当前用户的数据库读取 Finnhub API Key，回退到环境变量"""
+    try:
+        from app.config.database import db_session
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='finnhub_api_key').first()
+        if row and row.value:
+            return row.value
+    except Exception:
+        pass
     return os.getenv('FINNHUB_API_KEY', '')
 
 
