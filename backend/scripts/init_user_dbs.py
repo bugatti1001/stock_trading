@@ -94,12 +94,16 @@ def _seed_default_settings(usernames):
     from app.config.database import create_user_session
     from app.models.user_setting import UserSetting
 
-    # 从环境变量读取默认 key
-    defaults = {
-        'finnhub_api_key': os.getenv('FINNHUB_API_KEY', ''),
+    # 默认 API Key（.env 覆盖优先，否则用硬编码值）
+    _DEFAULTS = {
+        'finnhub_api_key': 'd67ol3pr01qobepiq03gd67ol3pr01qobepiq040',
     }
-    # 过滤掉空值和占位符
-    defaults = {k: v for k, v in defaults.items() if v and not v.startswith('your_')}
+    defaults = {}
+    for k, hardcoded in _DEFAULTS.items():
+        env_val = os.getenv(k.upper(), '')
+        val = env_val if (env_val and not env_val.startswith('your_')) else hardcoded
+        if val:
+            defaults[k] = val
 
     if not defaults:
         print("\n⏭️  无默认 API Key 需要写入（请在 .env 中配置）")
