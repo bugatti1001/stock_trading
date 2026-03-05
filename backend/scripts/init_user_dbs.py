@@ -82,8 +82,45 @@ def main():
 
         print(f"  ✅ [{username}] 迁移完成")
 
+    # Step 3: Write default API keys to user_settings
+    _seed_default_settings(usernames)
+
     print(f"\n🎉 所有用户数据库初始化完成！")
     print(f"   原始 stock_trading.db 已保留作为备份。")
+
+
+def _seed_default_settings(usernames):
+    """将默认 API Key 写入每个用户的 user_settings 表"""
+    from app.config.database import create_user_session
+    from app.models.user_setting import UserSetting
+
+    # 从环境变量读取默认 key
+    defaults = {
+        'finnhub_api_key': os.getenv('FINNHUB_API_KEY', ''),
+    }
+    # 过滤掉空值和占位符
+    defaults = {k: v for k, v in defaults.items() if v and not v.startswith('your_')}
+
+    if not defaults:
+        print("\n⏭️  无默认 API Key 需要写入（请在 .env 中配置）")
+        return
+
+    print(f"\n📝 写入默认 API Key: {list(defaults.keys())}")
+    for username in usernames:
+        s = create_user_session(username)
+        try:
+            for key, value in defaults.items():
+                row = s.query(UserSetting).filter_by(key=key).first()
+                if row:
+                    row.value = value
+                else:
+                    s.add(UserSetting(key=key, value=value))
+            s.commit()
+            print(f"  ✅ [{username}] API Key 已写入")
+        except Exception as e:
+            print(f"  ⚠️  [{username}] 写入 API Key 失败: {e}")
+        finally:
+            s.close()
 
 
 if __name__ == '__main__':
