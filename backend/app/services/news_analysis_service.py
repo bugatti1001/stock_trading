@@ -61,15 +61,18 @@ def _get_existing_today_symbols() -> set:
 def _analyze_single_stock(symbol: str, stock_name: str,
                           news_items: List[Dict],
                           principles_text: str,
-                          api_key: str = '') -> Optional[Dict]:
+                          api_key: str = '') -> Dict:
     """
     调用 Claude 分析单只股票的新闻（线程安全，不使用 db_session）
     api_key 必须由调用方（主线程）传入，子线程中无法访问 Flask session。
-    返回解析后的 dict 或 None
+
+    Returns:
+        dict: {'success': True, 'data': {...parsed result...}} on success,
+              {'success': False, 'error': '...'} on failure.
     """
     if not api_key:
         logger.error("ANTHROPIC_API_KEY not provided to _analyze_single_stock")
-        return None
+        return {'success': False, 'error': '未配置 API Key'}
 
     # 构建新闻文本
     news_text_parts: List[str] = []
@@ -106,26 +109,49 @@ def _analyze_single_stock(symbol: str, stock_name: str,
   "principle_impacts": ["影响描述1", "影响描述2"]
 }}"""
 
-    try:
-        import anthropic
-        import httpx
-        # 显式设置 connect/read/write 各阶段超时，防止网络半连接导致无限挂起
-        client = anthropic.Anthropic(
-            api_key=api_key,
-            timeout=httpx.Timeout(90.0, connect=15.0),
-        )
-        msg = client.messages.create(
-            model=AI_MODEL,
-            max_tokens=2048,
-            messages=[{'role': 'user', 'content': prompt}]
-        )
-        raw: str = msg.content[0].text.strip()
-        parsed: Optional[Dict] = parse_ai_json_response(raw)
-        logger.info(f"Analysis complete for {symbol}: {parsed.get('sentiment', '?') if parsed else '?'}")
-        return parsed
-    except Exception as e:
-        logger.error(f"News analysis failed for {symbol}: {e}", exc_info=True)
-        return None
+    import anthropic
+    import httpx
+    import time as _time
+
+    max_retries = 3
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        timeout=httpx.Timeout(90.0, connect=15.0),
+    )
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            msg = client.messages.create(
+                model=AI_MODEL,
+                max_tokens=2048,
+                messages=[{'role': 'user', 'content': prompt}]
+            )
+            raw: str = msg.content[0].text.strip()
+            parsed: Optional[Dict] = parse_ai_json_response(raw)
+            if parsed:
+                logger.info(f"Analysis complete for {symbol}: {parsed.get('sentiment', '?')}")
+                return {'success': True, 'data': parsed}
+            else:
+                return {'success': False, 'error': 'AI 返回内容无法解析'}
+        except anthropic.RateLimitError as e:
+            if attempt < max_retries:
+                wait_sec = 30 * attempt  # 30s, 60s, 90s
+                logger.warning(
+                    f"Rate limit hit for {symbol} (attempt {attempt}/{max_retries}), "
+                    f"waiting {wait_sec}s before retry..."
+                )
+                _time.sleep(wait_sec)
+            else:
+                logger.error(f"Rate limit exceeded for {symbol} after {max_retries} retries: {e}")
+                return {'success': False, 'error': f'API 速率限制，已重试 {max_retries} 次仍失败，请稍后再试'}
+        except anthropic.APIStatusError as e:
+            logger.error(f"API error for {symbol}: {e}")
+            return {'success': False, 'error': f'API 错误: {e.status_code}'}
+        except Exception as e:
+            logger.error(f"News analysis failed for {symbol}: {e}", exc_info=True)
+            return {'success': False, 'error': str(e)}
+
+    return {'success': False, 'error': '未知错误'}
 
 
 def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
@@ -187,11 +213,12 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
             yield "data: [DONE]\n\n"
             return
 
-        # 并行调用 Claude API
-        logger.info(f"Starting parallel news analysis for {len(tasks)} stocks "
-                     f"(model={AI_MODEL}, max_workers={min(NEWS_MAX_PARALLEL, len(tasks))})")
+        # 并行调用 Claude API（限制并发以避免速率限制）
+        effective_parallel = min(NEWS_MAX_PARALLEL, len(tasks), 2)  # 最多 2 并发，减少速率限制风险
+        logger.info(f"Starting news analysis for {len(tasks)} stocks "
+                     f"(model={AI_MODEL}, max_workers={effective_parallel})")
 
-        with ThreadPoolExecutor(max_workers=min(NEWS_MAX_PARALLEL, len(tasks))) as executor:
+        with ThreadPoolExecutor(max_workers=effective_parallel) as executor:
             future_to_symbol: Dict = {}
             for symbol, stock_name, news_items in tasks:
                 future = executor.submit(
@@ -200,15 +227,17 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
                 )
                 future_to_symbol[future] = (symbol, stock_name, news_items)
 
-            total_timeout = max(len(tasks) * 15, 120) + 60
+            # 增加超时以适应重试等待时间
+            total_timeout = max(len(tasks) * 120, 300) + 60
 
             try:
                 for future in as_completed(future_to_symbol, timeout=total_timeout):
                     symbol, stock_name, news_items = future_to_symbol[future]
                     completed += 1
                     try:
-                        result: Optional[Dict] = future.result(timeout=10)
-                        if result:
+                        result: Dict = future.result(timeout=120)
+                        if result.get('success') and result.get('data'):
+                            parsed = result['data']
                             # 逐条写入 DB
                             stock = stock_map.get(symbol)
                             sources: List[Dict] = [
@@ -220,10 +249,10 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
                                 stock_id=stock.id if stock else None,
                                 symbol=symbol,
                                 stock_name=stock_name,
-                                sentiment=result.get('sentiment', 'neutral'),
-                                summary=result.get('summary', ''),
-                                key_events=result.get('key_events', []),
-                                principle_impacts=result.get('principle_impacts', []),
+                                sentiment=parsed.get('sentiment', 'neutral'),
+                                summary=parsed.get('summary', ''),
+                                key_events=parsed.get('key_events', []),
+                                principle_impacts=parsed.get('principle_impacts', []),
                                 news_sources=sources,
                                 analyzed_at=datetime.now(timezone.utc),
                             )
@@ -231,8 +260,9 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
                             db_session.commit()
                             yield f"data: {json.dumps({'type': 'analysis', 'analysis': analysis.to_dict(), 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
                         else:
-                            logger.warning(f"Analysis failed for {symbol}, skipping")
-                            yield f"data: {json.dumps({'type': 'error', 'symbol': symbol, 'message': '分析失败（AI 返回空结果）', 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
+                            error_msg = result.get('error', '分析失败（AI 返回空结果）')
+                            logger.warning(f"Analysis failed for {symbol}: {error_msg}")
+                            yield f"data: {json.dumps({'type': 'error', 'symbol': symbol, 'message': error_msg, 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
                     except Exception as e:
                         logger.error(f"Analysis thread error for {symbol}: {e}")
                         yield f"data: {json.dumps({'type': 'error', 'symbol': symbol, 'message': str(e), 'completed': completed, 'total': total}, ensure_ascii=False)}\n\n"
