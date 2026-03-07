@@ -32,6 +32,14 @@ class XueqiuScraper:
     # 请求间隔(秒)，避免限流
     REQUEST_INTERVAL = 0.3
 
+    # ADR → 港股主板代码映射（雪球对 OTC ADR 常返回 market_capital=None，需从 HK 主板获取）
+    # HKD/USD 粗略汇率（用于 HK 市值转 USD，无需精确到小数点）
+    _HKD_USD_RATE = 7.75
+    _ADR_TO_HK = {
+        'XIACY': '01810',   # 小米集团
+        'TCEHY': '00700',   # 腾讯控股
+    }
+
     def __init__(self, token: str = None):
         self.token = token or XUEQIU_TOKEN
         self._session: Optional[requests.Session] = None
@@ -266,8 +274,23 @@ class XueqiuScraper:
         market_cap_raw = q.get('market_capital') or q.get('total_market_cap')
         market_cap_b = None
         if market_cap_raw:
-            # 雪球市值单位通常为元，转换为十亿
+            # 雪球市值单位通常为元/当地货币，转换为十亿
             market_cap_b = market_cap_raw / 1e9
+
+        # ADR 回退：OTC ADR 可能没有市值，从港股主板获取后转换为 USD
+        if market_cap_b is None and symbol.upper() in self._ADR_TO_HK:
+            hk_code = self._ADR_TO_HK[symbol.upper()]
+            try:
+                hk_quote = self.get_quote(hk_code)
+                if hk_quote:
+                    hk_cap = hk_quote.get('market_capital') or hk_quote.get('total_market_cap')
+                    if hk_cap:
+                        market_cap_b = hk_cap / 1e9 / self._HKD_USD_RATE
+                        logger.info(f'[Xueqiu] {symbol}: ADR market_cap=None, '
+                                    f'从 {hk_code}.HK 获取 {hk_cap/1e9:.1f}B HKD → '
+                                    f'{market_cap_b:.1f}B USD')
+            except Exception as e:
+                logger.warning(f'[Xueqiu] ADR fallback for {symbol} failed: {e}')
 
         # ipo_date: 雪球 issue_date 为毫秒时间戳
         ipo_date = None
