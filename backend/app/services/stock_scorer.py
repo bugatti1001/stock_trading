@@ -560,8 +560,8 @@ def score_all_stocks(weights: Optional[Dict[str, float]] = None) -> List[Dict]:
         scored = score_stock(stock, fins, holding, weights)
         results.append(scored)
 
-    # 按总分排序
-    results.sort(key=lambda x: x['total_score'], reverse=True)
+    # 有持仓的排前面，同组内按总分排序
+    results.sort(key=lambda x: (x.get('holding') is not None, x['total_score']), reverse=True)
     return results
 
 
