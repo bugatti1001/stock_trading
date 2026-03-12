@@ -154,11 +154,11 @@
         <div class="card">
             <div class="card-header">
                 <h5 class="card-title mb-0">
-                    <i class="bi bi-bar-chart"></i> 市值分布
+                    <i class="bi bi-bar-chart"></i> 持仓评分分布
                 </h5>
             </div>
             <div class="card-body">
-                <canvas id="marketCapChart" height="250"></canvas>
+                <canvas id="riskScoreChart" height="250"></canvas>
             </div>
         </div>
     </div>
@@ -568,16 +568,18 @@ function saveWeights() {
 /* ===== Charts ===== */
 const sectorData = {{ sector_data | tojson }};
 const sectorCtx = document.getElementById('sectorChart').getContext('2d');
+// 生成高区分度颜色（基于 HSL 均匀分布）
+const sectorColors = sectorData.labels.map((_, i, arr) => {
+    const hue = Math.round((i * 360) / Math.max(arr.length, 1));
+    return `hsl(${hue}, 70%, 55%)`;
+});
 new Chart(sectorCtx, {
     type: 'doughnut',
     data: {
         labels: sectorData.labels,
         datasets: [{
             data: sectorData.values,
-            backgroundColor: [
-                '#0d6efd', '#6610f2', '#6f42c1', '#d63384',
-                '#dc3545', '#fd7e14', '#ffc107', '#20c997'
-            ]
+            backgroundColor: sectorColors
         }]
     },
     options: {
@@ -587,23 +589,60 @@ new Chart(sectorCtx, {
     }
 });
 
-const marketCapData = {{ market_cap_data | tojson }};
-const marketCapCtx = document.getElementById('marketCapChart').getContext('2d');
-new Chart(marketCapCtx, {
-    type: 'bar',
-    data: {
-        labels: marketCapData.labels,
-        datasets: [{
-            label: '股票数量',
-            data: marketCapData.values,
-            backgroundColor: '#0d6efd'
-        }]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
-    }
-});
+// 持仓评分分布图 — 从每日交易建议数据中提取有持仓的股票
+(async function loadRiskScoreChart() {
+    const ctx = document.getElementById('riskScoreChart').getContext('2d');
+    try {
+        const res = await fetch('/api/agent/daily_scores');
+        const data = await res.json();
+        if (!data.success || !data.scores) return;
+        // 只取有持仓的股票
+        const held = data.scores.filter(s => s.holding);
+        if (!held.length) {
+            ctx.font = '14px sans-serif';
+            ctx.fillStyle = '#999';
+            ctx.fillText('暂无持仓数据', 80, 120);
+            return;
+        }
+        held.sort((a, b) => b.total_score - a.total_score);
+        const labels = held.map(s => s.symbol);
+        const scores = held.map(s => s.total_score);
+        const colors = scores.map(s => s >= 70 ? '#10b981' : s >= 50 ? '#f59e0b' : '#ef4444');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: '综合评分',
+                    data: scores,
+                    backgroundColor: colors,
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                indexAxis: held.length > 8 ? 'y' : 'x',
+                scales: {
+                    [held.length > 8 ? 'x' : 'y']: { beginAtZero: true, max: 100 },
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            afterLabel: function(ctx) {
+                                const s = held[ctx.dataIndex];
+                                if (!s || !s.dimensions) return '';
+                                return Object.entries(s.dimensions)
+                                    .map(([k, v]) => `${v.label}: ${v.score}分`)
+                                    .join('\n');
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    } catch (e) { console.error('risk score chart error:', e); }
+})();
 </script>
 {% endblock %}

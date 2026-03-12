@@ -33,29 +33,6 @@ def dashboard():
         func.sum(case((Stock.in_pool == True, 1), else_=0)).label('in_pool'),
     ).first()
 
-    # Single query for market cap distribution (avoid 4 separate queries)
-    # market_cap 存储单位为"十亿本币"，需按汇率折算为 USD 再分桶
-    pool_stocks = db_session.query(Stock.market_cap, Stock.currency).filter(
-        Stock.in_pool == True
-    ).all()
-
-    # 近似汇率：本币 → USD（定期人工更新即可，无需实时精确）
-    _TO_USD = {'USD': 1.0, 'CNY': 0.14, 'HKD': 0.13}
-
-    market_cap_buckets = {'< $10B': 0, '$10B - $50B': 0, '$50B - $100B': 0, '> $100B': 0}
-    for mc, currency in pool_stocks:
-        if mc is None:
-            continue
-        mc_usd = mc * _TO_USD.get(currency or 'USD', 1.0)
-        if mc_usd < 10:
-            market_cap_buckets['< $10B'] += 1
-        elif mc_usd < 50:
-            market_cap_buckets['$10B - $50B'] += 1
-        elif mc_usd < 100:
-            market_cap_buckets['$50B - $100B'] += 1
-        else:
-            market_cap_buckets['> $100B'] += 1
-
     stats = {
         'stocks_in_pool': pool_counts.in_pool or 0,
         'total_stocks': pool_counts.total or 0,
@@ -81,16 +58,10 @@ def dashboard():
     if not sector_data['labels']:
         sector_data = {'labels': ['待分类'], 'values': [stats['stocks_in_pool']]}
 
-    market_cap_data = {
-        'labels': list(market_cap_buckets.keys()),
-        'values': list(market_cap_buckets.values()),
-    }
-
     return render_template(
         'dashboard.html',
         stats=stats,
         sector_data=sector_data,
-        market_cap_data=market_cap_data
     )
 
 

@@ -79,7 +79,7 @@
 
 <!-- 统计卡片 -->
 <div class="row g-3 mb-4" id="statsRow">
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-lg">
         <div class="card stat-card blue h-100">
             <div class="card-body">
                 <div class="text-muted small">总交易数</div>
@@ -87,7 +87,15 @@
             </div>
         </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-lg">
+        <div class="card stat-card green h-100">
+            <div class="card-body">
+                <div class="text-muted small">总持仓价值</div>
+                <div class="fs-4 fw-bold" id="statPortfolioValue">—</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg">
         <div class="card stat-card green h-100">
             <div class="card-body">
                 <div class="text-muted small">平均风险分</div>
@@ -95,7 +103,7 @@
             </div>
         </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-lg">
         <div class="card stat-card red h-100">
             <div class="card-body">
                 <div class="text-muted small">高风险交易</div>
@@ -103,7 +111,7 @@
             </div>
         </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-lg">
         <div class="card stat-card orange h-100">
             <div class="card-body">
                 <div class="text-muted small">最常见违规</div>
@@ -256,9 +264,7 @@
                     <label class="form-label fw-bold">选择 CSV 文件</label>
                     <input type="file" class="form-control" id="importFile" accept=".csv">
                 </div>
-                <div id="importResult" style="display:none;">
-                    <div class="alert alert-info mb-0" id="importResultContent"></div>
-                </div>
+                <div id="importResult" class="mt-2" style="display:none;"></div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
@@ -284,17 +290,17 @@ async function submitImportCSV() {
     const btn = document.getElementById('importSubmitBtn');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>导入中...';
-    document.getElementById('importResult').style.display = 'none';
+
+    const resultWrap = document.getElementById('importResult');
+    resultWrap.style.display = 'none';
+    resultWrap.innerHTML = '';
 
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
 
-    const resultDiv = document.getElementById('importResultContent');
-    const resultWrap = document.getElementById('importResult');
     try {
         const res = await fetch('/api/trades/import_csv', { method: 'POST', body: formData });
         const data = await res.json();
-        console.log('import response:', res.status, data);
 
         if (res.status === 401) {
             window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
@@ -302,28 +308,38 @@ async function submitImportCSV() {
         }
 
         if (data.success) {
-            resultDiv.className = 'alert alert-success mb-0';
             const fmtLabel = data.format === 'position_snapshot' ? '持仓快照' : 'Robinhood 交易历史';
             let msg = `<small class="text-muted">识别格式: ${fmtLabel}</small><br>`;
             msg += `成功导入 <strong>${data.imported}</strong> 条交易记录`;
             if (data.skipped > 0) msg += `，跳过 ${data.skipped} 条（重复/非交易行）`;
             if (data.trade_date) msg += `<br><small>交易日期: ${data.trade_date}</small>`;
             if (data.errors && data.errors.length > 0) {
-                msg += '<br><small class="text-muted">异常: ' + data.errors.slice(0,5).join('; ') + '</small>';
+                msg += '<br><small class="text-muted">异常: ' + data.errors.slice(0, 5).join('; ') + '</small>';
             }
-            resultDiv.innerHTML = msg;
+            resultWrap.innerHTML = `<div class="alert alert-success mb-0">${msg}</div>`;
+            resultWrap.style.display = 'block';
+
+            // 刷新列表和统计
             if (typeof loadTrades === 'function') loadTrades();
             if (typeof loadStats === 'function') loadStats();
+
+            // 1.5秒后自动关闭弹窗并重置
+            setTimeout(() => {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('importModal'));
+                if (modal) modal.hide();
+                fileInput.value = '';
+                resultWrap.style.display = 'none';
+                resultWrap.innerHTML = '';
+            }, 1500);
         } else {
-            resultDiv.className = 'alert alert-danger mb-0';
-            resultDiv.textContent = data.error || '导入失败';
+            resultWrap.innerHTML = `<div class="alert alert-danger mb-0">${data.error || '导入失败'}</div>`;
+            resultWrap.style.display = 'block';
         }
     } catch (e) {
         console.error('import error:', e);
-        resultDiv.className = 'alert alert-danger mb-0';
-        resultDiv.textContent = '网络错误: ' + e.message;
-    } finally {
+        resultWrap.innerHTML = `<div class="alert alert-danger mb-0">网络错误: ${e.message}</div>`;
         resultWrap.style.display = 'block';
+    } finally {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-upload me-1"></i>上传导入';
     }
@@ -412,6 +428,15 @@ function filterTrades() {
 
 // ── Stats ──────────────────────────────────────────────────────
 async function loadStats() {
+    // 加载持仓价值
+    try {
+        const pRes = await fetch('/api/trades/portfolio');
+        const pData = await pRes.json();
+        if (pData.success && pData.holdings) {
+            const totalValue = pData.holdings.reduce((sum, h) => sum + (h.market_value || 0), 0);
+            document.getElementById('statPortfolioValue').textContent = '$' + totalValue.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+        }
+    } catch (e) { console.error('portfolio load error:', e); }
     try {
         const res = await fetch('/api/trades/stats');
         const data = await res.json();
