@@ -65,6 +65,9 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h4 class="mb-0"><i class="bi bi-journal-check me-2 text-primary"></i>交易日记</h4>
     <div class="d-flex gap-2">
+        <button class="btn btn-outline-info" onclick="document.getElementById('importModal') && new bootstrap.Modal(document.getElementById('importModal')).show()">
+            <i class="bi bi-upload me-1"></i>导入 Robinhood CSV
+        </button>
         <a href="/api/trades/export" class="btn btn-outline-success">
             <i class="bi bi-download me-1"></i>导出 CSV
         </a>
@@ -234,10 +237,87 @@
     </div>
 </div>
 
+<!-- Robinhood CSV Import Modal -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-upload me-2"></i>导入 Robinhood 交易记录</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">
+                    上传从 Robinhood 导出的 CSV 文件。系统将自动识别 Buy/Sell 交易记录，
+                    跳过分红、费用等非交易行。重复记录会自动去重。
+                </p>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">选择 CSV 文件</label>
+                    <input type="file" class="form-control" id="importFile" accept=".csv">
+                </div>
+                <div id="importResult" style="display:none;">
+                    <div class="alert alert-info mb-0" id="importResultContent"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" onclick="submitImportCSV()" id="importSubmitBtn">
+                    <i class="bi bi-upload me-1"></i>上传导入
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
 <script>
+// ── CSV Import ────────────────────────────────────────────────
+async function submitImportCSV() {
+    const fileInput = document.getElementById('importFile');
+    if (!fileInput.files.length) {
+        alert('请选择 CSV 文件');
+        return;
+    }
+    const btn = document.getElementById('importSubmitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>导入中...';
+    document.getElementById('importResult').style.display = 'none';
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    try {
+        const res = await fetch('/api/trades/import_csv', { method: 'POST', body: formData });
+        const data = await res.json();
+        const resultDiv = document.getElementById('importResultContent');
+
+        if (data.success) {
+            resultDiv.className = 'alert alert-success mb-0';
+            let msg = `成功导入 <strong>${data.imported}</strong> 条交易记录`;
+            if (data.skipped > 0) msg += `，跳过 ${data.skipped} 条（重复/非交易行）`;
+            if (data.errors && data.errors.length > 0) {
+                msg += '<br><small class="text-muted">异常: ' + data.errors.slice(0,5).join('; ') + '</small>';
+            }
+            resultDiv.innerHTML = msg;
+            // 刷新列表
+            if (typeof loadTrades === 'function') loadTrades();
+            if (typeof loadStats === 'function') loadStats();
+        } else {
+            resultDiv.className = 'alert alert-danger mb-0';
+            resultDiv.textContent = data.error || '导入失败';
+        }
+        document.getElementById('importResult').style.display = 'block';
+    } catch (e) {
+        const resultDiv = document.getElementById('importResultContent');
+        resultDiv.className = 'alert alert-danger mb-0';
+        resultDiv.textContent = '网络错误: ' + e.message;
+        document.getElementById('importResult').style.display = 'block';
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-upload me-1"></i>上传导入';
+}
+
 // ── State ──────────────────────────────────────────────────────
 let allTrades = [];
 let detailModal;

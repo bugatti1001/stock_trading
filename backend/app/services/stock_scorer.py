@@ -1,0 +1,636 @@
+"""
+Stock Scorer — 5 维度评分引擎
+基于规则打分（可解释） + AI 补充分析
+
+5 个维度及默认权重：
+  估值 (valuation)        30%
+  盈利质量 (earnings)     25%
+  财务健康 (health)       20%
+  护城河 (moat)           15%
+  新闻情绪 (news)         10%
+"""
+import json
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Any
+
+from app.config.database import db_session
+from app.models.stock import Stock
+from app.models.stock_news_analysis import StockNewsAnalysis
+from app.models.user_setting import UserSetting
+from app.models.financial_data import FinancialData, ReportPeriod
+from app.services.kpi_calculator import compute_single_period_kpis, compute_multi_period_kpis
+from app.services.stock_analysis_service import batch_load_recent_financials
+from app.utils.cache import cache
+
+logger = logging.getLogger(__name__)
+
+# ════════════════════════════════════════════════════════════════
+#  默认权重
+# ════════════════════════════════════════════════════════════════
+
+DEFAULT_WEIGHTS: Dict[str, float] = {
+    'valuation': 0.30,
+    'earnings_quality': 0.25,
+    'financial_health': 0.20,
+    'moat': 0.15,
+    'news_sentiment': 0.10,
+}
+
+DIMENSION_LABELS: Dict[str, str] = {
+    'valuation': '估值',
+    'earnings_quality': '盈利质量',
+    'financial_health': '财务健康',
+    'moat': '护城河',
+    'news_sentiment': '新闻情绪',
+}
+
+
+# ════════════════════════════════════════════════════════════════
+#  用户权重读写
+# ════════════════════════════════════════════════════════════════
+
+def get_user_weights() -> Dict[str, float]:
+    """获取当前用户的评分权重，未设置则返回默认值"""
+    try:
+        row = db_session.query(UserSetting).filter_by(key='scorer_weights').first()
+        if row and row.value:
+            weights = json.loads(row.value)
+            # 验证所有维度都在
+            for k in DEFAULT_WEIGHTS:
+                if k not in weights:
+                    weights[k] = DEFAULT_WEIGHTS[k]
+            return weights
+    except Exception as e:
+        logger.warning(f"读取评分权重失败: {e}")
+    return dict(DEFAULT_WEIGHTS)
+
+
+def save_user_weights(weights: Dict[str, float]) -> Dict[str, float]:
+    """
+    保存用户评分权重
+    自动归一化使权重之和为 1.0
+    """
+    # 只保留有效维度
+    clean = {}
+    for k in DEFAULT_WEIGHTS:
+        clean[k] = float(weights.get(k, DEFAULT_WEIGHTS[k]))
+
+    # 归一化
+    total = sum(clean.values())
+    if total > 0:
+        clean = {k: round(v / total, 4) for k, v in clean.items()}
+
+    row = db_session.query(UserSetting).filter_by(key='scorer_weights').first()
+    if row:
+        row.value = json.dumps(clean)
+    else:
+        db_session.add(UserSetting(key='scorer_weights', value=json.dumps(clean)))
+    db_session.commit()
+    return clean
+
+
+# ════════════════════════════════════════════════════════════════
+#  维度评分函数（每个 0-100）
+# ════════════════════════════════════════════════════════════════
+
+def _clamp(val: float) -> int:
+    """Clamp score to 0-100"""
+    return max(0, min(100, int(round(val))))
+
+
+def _score_valuation(stock: Stock, latest_fd: Optional[FinancialData]) -> Dict[str, Any]:
+    """估值评分：PE, PB, PS, 股息率"""
+    sub_scores = []
+    details = {}
+
+    # PE 评分
+    pe = stock.pe_ratio
+    if pe is not None and pe > 0:
+        if pe <= 10:
+            s = 95
+        elif pe <= 15:
+            s = 85
+        elif pe <= 20:
+            s = 70
+        elif pe <= 25:
+            s = 55
+        elif pe <= 30:
+            s = 40
+        elif pe <= 40:
+            s = 25
+        else:
+            s = 10
+        sub_scores.append(s)
+        details['PE'] = f"{pe:.1f} → {s}分"
+    elif pe is not None and pe < 0:
+        # 亏损股 PE 为负
+        sub_scores.append(20)
+        details['PE'] = f"{pe:.1f}(亏损) → 20分"
+
+    # PB 评分
+    pb = stock.pb_ratio
+    if pb is not None and pb > 0:
+        if pb <= 1.0:
+            s = 95
+        elif pb <= 2.0:
+            s = 80
+        elif pb <= 3.0:
+            s = 65
+        elif pb <= 5.0:
+            s = 45
+        elif pb <= 8.0:
+            s = 30
+        else:
+            s = 15
+        sub_scores.append(s)
+        details['PB'] = f"{pb:.2f} → {s}分"
+
+    # PS 评分
+    extra = stock.extra_data or {}
+    ps = extra.get('ps_ratio')
+    if ps is not None and ps > 0:
+        if ps <= 1.0:
+            s = 95
+        elif ps <= 3.0:
+            s = 80
+        elif ps <= 5.0:
+            s = 65
+        elif ps <= 8.0:
+            s = 45
+        elif ps <= 15:
+            s = 30
+        else:
+            s = 15
+        sub_scores.append(s)
+        details['PS'] = f"{ps:.1f} → {s}分"
+
+    # 股息率评分
+    dy = stock.dividend_yield
+    if dy is not None and dy >= 0:
+        dy_pct = dy * 100 if dy < 1 else dy  # 可能已经是百分比
+        if dy_pct >= 4.0:
+            s = 90
+        elif dy_pct >= 3.0:
+            s = 75
+        elif dy_pct >= 2.0:
+            s = 60
+        elif dy_pct >= 1.0:
+            s = 45
+        elif dy_pct > 0:
+            s = 30
+        else:
+            s = 20
+        sub_scores.append(s)
+        details['股息率'] = f"{dy_pct:.2f}% → {s}分"
+
+    score = int(round(sum(sub_scores) / len(sub_scores))) if sub_scores else 50
+    return {'score': _clamp(score), 'details': details}
+
+
+def _score_earnings_quality(fins: List[FinancialData]) -> Dict[str, Any]:
+    """盈利质量评分：连续盈利、利润率、现金流/利润比"""
+    sub_scores = []
+    details = {}
+
+    if not fins:
+        return {'score': 50, 'details': {'说明': '无财务数据'}}
+
+    latest = fins[0]
+    kpis = compute_single_period_kpis(latest)
+    multi_kpis = compute_multi_period_kpis(fins)
+
+    # 连续 3 年盈利
+    if len(fins) >= 3:
+        profitable = all(f.net_income is not None and f.net_income > 0 for f in fins[:3])
+        s = 90 if profitable else 30
+        sub_scores.append(s)
+        details['连续3年盈利'] = f"{'是' if profitable else '否'} → {s}分"
+    elif len(fins) >= 1 and latest.net_income is not None:
+        s = 60 if latest.net_income > 0 else 20
+        sub_scores.append(s)
+        details['最新盈利'] = f"{'盈利' if latest.net_income > 0 else '亏损'} → {s}分"
+
+    # 净利率
+    nm = kpis.get('net_margin')
+    if nm is not None:
+        nm_pct = nm * 100
+        if nm_pct >= 20:
+            s = 90
+        elif nm_pct >= 15:
+            s = 80
+        elif nm_pct >= 10:
+            s = 65
+        elif nm_pct >= 5:
+            s = 50
+        elif nm_pct >= 0:
+            s = 30
+        else:
+            s = 10
+        sub_scores.append(s)
+        details['净利率'] = f"{nm_pct:.1f}% → {s}分"
+
+    # 毛利率
+    gm = kpis.get('gross_margin')
+    if gm is not None:
+        gm_pct = gm * 100
+        if gm_pct >= 50:
+            s = 90
+        elif gm_pct >= 40:
+            s = 80
+        elif gm_pct >= 30:
+            s = 65
+        elif gm_pct >= 20:
+            s = 50
+        else:
+            s = 30
+        sub_scores.append(s)
+        details['毛利率'] = f"{gm_pct:.1f}% → {s}分"
+
+    # 现金流/利润比（3年）
+    cfr = multi_kpis.get('cashflow_profit_ratio_3y')
+    if cfr is not None:
+        if cfr >= 1.2:
+            s = 95
+        elif cfr >= 1.0:
+            s = 85
+        elif cfr >= 0.8:
+            s = 65
+        elif cfr >= 0.5:
+            s = 40
+        else:
+            s = 20
+        sub_scores.append(s)
+        details['现金流/利润(3Y)'] = f"{cfr:.2f} → {s}分"
+
+    score = int(round(sum(sub_scores) / len(sub_scores))) if sub_scores else 50
+    return {'score': _clamp(score), 'details': details}
+
+
+def _score_financial_health(latest_fd: Optional[FinancialData]) -> Dict[str, Any]:
+    """财务健康评分：净现金、负债率、流动性"""
+    sub_scores = []
+    details = {}
+
+    if not latest_fd:
+        return {'score': 50, 'details': {'说明': '无财务数据'}}
+
+    kpis = compute_single_period_kpis(latest_fd)
+
+    # 净现金
+    net_cash = kpis.get('net_cash')
+    if net_cash is not None:
+        if net_cash > 0:
+            s = 85
+        elif net_cash > -1e9:
+            s = 55
+        else:
+            s = 25
+        sub_scores.append(s)
+        nc_b = net_cash / 1e9
+        details['净现金'] = f"{nc_b:.1f}B → {s}分"
+
+    # 负债率 = (短期借款 + 长期借款) / 总资产
+    stb = latest_fd.short_term_borrowings or 0
+    ltb = latest_fd.long_term_borrowings or 0
+    ta = latest_fd.total_assets
+    if ta and ta > 0:
+        debt_ratio = (stb + ltb) / ta * 100
+        if debt_ratio <= 10:
+            s = 95
+        elif debt_ratio <= 20:
+            s = 80
+        elif debt_ratio <= 30:
+            s = 65
+        elif debt_ratio <= 40:
+            s = 50
+        elif debt_ratio <= 50:
+            s = 35
+        else:
+            s = 15
+        sub_scores.append(s)
+        details['借款/总资产'] = f"{debt_ratio:.1f}% → {s}分"
+
+    # 流动性：总资产 - 流动负债 > 0
+    ta_cl = kpis.get('total_assets_minus_current_liab')
+    if ta_cl is not None and ta is not None and ta > 0:
+        ratio = ta_cl / ta * 100
+        if ratio >= 70:
+            s = 90
+        elif ratio >= 50:
+            s = 70
+        elif ratio >= 30:
+            s = 50
+        else:
+            s = 25
+        sub_scores.append(s)
+        details['(总资产-流动负债)/总资产'] = f"{ratio:.0f}% → {s}分"
+
+    # 净资产为正
+    eq = latest_fd.total_equity
+    if eq is not None:
+        s = 80 if eq > 0 else 15
+        sub_scores.append(s)
+        details['净资产'] = f"{'正' if eq > 0 else '负'} → {s}分"
+
+    score = int(round(sum(sub_scores) / len(sub_scores))) if sub_scores else 50
+    return {'score': _clamp(score), 'details': details}
+
+
+def _score_moat(fins: List[FinancialData], latest_fd: Optional[FinancialData]) -> Dict[str, Any]:
+    """护城河评分：毛利率趋势、市场份额"""
+    sub_scores = []
+    details = {}
+
+    if not fins:
+        return {'score': 50, 'details': {'说明': '无财务数据'}}
+
+    # 毛利率水平（最新）
+    latest_kpis = compute_single_period_kpis(fins[0])
+    gm = latest_kpis.get('gross_margin')
+    if gm is not None:
+        gm_pct = gm * 100
+        if gm_pct >= 60:
+            s = 95
+        elif gm_pct >= 50:
+            s = 85
+        elif gm_pct >= 40:
+            s = 70
+        elif gm_pct >= 30:
+            s = 55
+        elif gm_pct >= 20:
+            s = 40
+        else:
+            s = 25
+        sub_scores.append(s)
+        details['毛利率水平'] = f"{gm_pct:.1f}% → {s}分"
+
+    # 毛利率趋势（3年稳定或上升=好）
+    if len(fins) >= 2:
+        gms = []
+        for f in fins[:3]:
+            fk = compute_single_period_kpis(f)
+            g = fk.get('gross_margin')
+            if g is not None:
+                gms.append(g)
+        if len(gms) >= 2:
+            trend = gms[0] - gms[-1]  # 最新 - 最早，正 = 上升
+            if trend > 0.02:
+                s = 90
+                label = '上升'
+            elif trend >= -0.02:
+                s = 70
+                label = '稳定'
+            else:
+                s = 35
+                label = '下降'
+            sub_scores.append(s)
+            details['毛利率趋势'] = f"{label} → {s}分"
+
+    # 市场份额（来自 extended_metrics）
+    if latest_fd:
+        ext = latest_fd.extended_metrics_dict or {}
+        moat_ind = ext.get('moat_indicators') or {}
+        ms = moat_ind.get('market_share_pct')
+        if ms is not None:
+            if ms >= 30:
+                s = 95
+            elif ms >= 20:
+                s = 80
+            elif ms >= 10:
+                s = 65
+            elif ms >= 5:
+                s = 50
+            else:
+                s = 35
+            sub_scores.append(s)
+            details['市场份额'] = f"{ms}% → {s}分"
+
+    score = int(round(sum(sub_scores) / len(sub_scores))) if sub_scores else 50
+    return {'score': _clamp(score), 'details': details}
+
+
+def _score_news_sentiment(symbol: str) -> Dict[str, Any]:
+    """新闻情绪评分：基于当天 StockNewsAnalysis"""
+    utc_today = datetime.now(timezone.utc).date()
+    today_start = datetime.combine(utc_today, datetime.min.time(), tzinfo=timezone.utc)
+    tomorrow_start = datetime.combine(
+        utc_today + timedelta(days=1),
+        datetime.min.time(), tzinfo=timezone.utc,
+    )
+
+    analysis = db_session.query(StockNewsAnalysis).filter(
+        StockNewsAnalysis.symbol == symbol,
+        StockNewsAnalysis.analyzed_at >= today_start,
+        StockNewsAnalysis.analyzed_at < tomorrow_start,
+    ).first()
+
+    if not analysis:
+        return {'score': 50, 'details': {'说明': '无当日新闻分析'}}
+
+    sentiment = analysis.sentiment
+    sentiment_map = {'bullish': 85, 'neutral': 50, 'bearish': 15}
+    score = sentiment_map.get(sentiment, 50)
+
+    details = {
+        '情绪': f"{sentiment} → {score}分",
+        '摘要': (analysis.summary or '')[:80],
+    }
+
+    return {'score': _clamp(score), 'details': details}
+
+
+# ════════════════════════════════════════════════════════════════
+#  操作建议判定
+# ════════════════════════════════════════════════════════════════
+
+def _determine_action(total_score: float, holding: Optional[Dict]) -> Dict[str, str]:
+    """
+    根据总分和持仓状态生成操作建议
+
+    Returns:
+        {'action': 'buy|add|hold|reduce|sell', 'action_label': '中文标签', 'action_emoji': emoji}
+    """
+    has_position = holding is not None and holding.get('net_shares', 0) > 0
+
+    if total_score >= 80:
+        if has_position:
+            return {'action': 'add', 'action_label': '加仓', 'action_emoji': '🟢'}
+        return {'action': 'buy', 'action_label': '买入', 'action_emoji': '🟢'}
+    elif total_score >= 60:
+        return {'action': 'hold', 'action_label': '持有', 'action_emoji': '⚪'}
+    elif total_score >= 40:
+        if has_position:
+            return {'action': 'reduce', 'action_label': '减仓', 'action_emoji': '🟡'}
+        return {'action': 'hold', 'action_label': '观望', 'action_emoji': '⚪'}
+    else:
+        if has_position:
+            return {'action': 'sell', 'action_label': '卖出', 'action_emoji': '🔴'}
+        return {'action': 'avoid', 'action_label': '回避', 'action_emoji': '🔴'}
+
+
+# ════════════════════════════════════════════════════════════════
+#  核心评分函数
+# ════════════════════════════════════════════════════════════════
+
+def score_stock(
+    stock: Stock,
+    fins: List[FinancialData],
+    holding: Optional[Dict],
+    weights: Dict[str, float],
+) -> Dict[str, Any]:
+    """
+    对单只股票进行 5 维度评分
+
+    Returns:
+        {
+            'symbol', 'stock_name', 'total_score',
+            'dimensions': {dim_key: {score, weight, details}},
+            'action', 'action_label', 'action_emoji',
+            'holding': {持仓信息},
+        }
+    """
+    latest_fd = fins[0] if fins else None
+
+    dim_results = {
+        'valuation': _score_valuation(stock, latest_fd),
+        'earnings_quality': _score_earnings_quality(fins),
+        'financial_health': _score_financial_health(latest_fd),
+        'moat': _score_moat(fins, latest_fd),
+        'news_sentiment': _score_news_sentiment(stock.symbol),
+    }
+
+    # 加权计算总分
+    total = 0.0
+    for dim_key, result in dim_results.items():
+        w = weights.get(dim_key, DEFAULT_WEIGHTS.get(dim_key, 0))
+        result['weight'] = w
+        result['label'] = DIMENSION_LABELS.get(dim_key, dim_key)
+        total += result['score'] * w
+
+    total_score = _clamp(total)
+    action_info = _determine_action(total_score, holding)
+
+    return {
+        'symbol': stock.symbol,
+        'stock_name': stock.name or stock.symbol,
+        'total_score': total_score,
+        'dimensions': dim_results,
+        **action_info,
+        'holding': holding,
+        'current_price': stock.current_price,
+        'pe_ratio': stock.pe_ratio,
+        'market_cap': stock.market_cap,
+    }
+
+
+# ════════════════════════════════════════════════════════════════
+#  批量评分 + AI 补充
+# ════════════════════════════════════════════════════════════════
+
+def score_all_stocks(weights: Optional[Dict[str, float]] = None) -> List[Dict]:
+    """
+    对股票池所有股票进行评分并排序
+
+    Returns:
+        List of scored stock dicts, sorted by total_score desc
+    """
+    if weights is None:
+        weights = get_user_weights()
+
+    # 加载股票池
+    stocks = db_session.query(Stock).filter_by(in_pool=True, is_active=True).all()
+    if not stocks:
+        return []
+
+    # 批量加载财务数据
+    stock_ids = [s.id for s in stocks]
+    fins_map = batch_load_recent_financials(stock_ids, limit=3)
+
+    # 加载持仓
+    from app.services.portfolio_service import compute_holdings
+    holdings = compute_holdings()
+    holdings_map = {h['symbol']: h for h in holdings}
+
+    # 逐只评分
+    results = []
+    for stock in stocks:
+        fins = fins_map.get(stock.id, [])
+        holding = holdings_map.get(stock.symbol)
+        scored = score_stock(stock, fins, holding, weights)
+        results.append(scored)
+
+    # 按总分排序
+    results.sort(key=lambda x: x['total_score'], reverse=True)
+    return results
+
+
+def generate_ai_recommendations(scored_stocks: List[Dict]) -> str:
+    """
+    基于规则评分结果，调用 AI 生成自然语言补充分析
+
+    只取评分最高的 4 只和最低的 4 只，请求 AI 给出简要理由
+    """
+    from app.config.settings import AI_MODEL, AI_TRADE_MAX_TOKENS, get_anthropic_key
+    from app.utils.ai_helpers import build_principles_summary
+
+    api_key = get_anthropic_key()
+    if not api_key:
+        return ''
+
+    if not scored_stocks:
+        return ''
+
+    # 取 Top 4 和 Bottom 4
+    top = scored_stocks[:4]
+    bottom = scored_stocks[-4:] if len(scored_stocks) > 4 else []
+
+    def _stock_summary(s: Dict) -> str:
+        dims = s.get('dimensions', {})
+        dim_text = ', '.join(
+            f"{d['label']}:{d['score']}" for d in dims.values()
+        )
+        holding_text = ''
+        if s.get('holding'):
+            h = s['holding']
+            holding_text = f"持仓{h.get('net_shares', 0)}股, 盈亏{h.get('unrealized_pnl_pct', 0):.1f}%"
+        return f"{s['symbol']}({s.get('stock_name','')}): 总分{s['total_score']}, [{dim_text}], {holding_text}"
+
+    top_text = '\n'.join(_stock_summary(s) for s in top)
+    bottom_text = '\n'.join(_stock_summary(s) for s in bottom) if bottom else '（不足4只）'
+
+    principles = build_principles_summary()
+
+    prompt = f"""你是一名基本面投资助手。以下是根据规则评分系统选出的股票评分结果。
+
+【评分最高 Top 4 — 建议关注/买入】
+{top_text}
+
+【评分最低 Bottom 4 — 建议警惕/卖出】
+{bottom_text}
+
+【用户投资原则】
+{principles}
+
+请：
+1. 对每只股票用 1 句话（20字内）给出操作理由
+2. 用 1 句话总结当前组合整体情况
+3. 如果某只股票的操作与用户投资原则矛盾，指出来
+
+返回 JSON 格式：
+{{"stock_reasons": {{"AAPL": "估值合理，现金流充裕", ...}}, "portfolio_summary": "一句话总结"}}"""
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model=AI_MODEL,
+            max_tokens=AI_TRADE_MAX_TOKENS,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        from app.utils.ai_helpers import parse_ai_json_response
+        return raw  # 返回原始文本，前端或调用方解析
+    except Exception as e:
+        logger.error(f"generate_ai_recommendations 失败: {e}")
+        return ''

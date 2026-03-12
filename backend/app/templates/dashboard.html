@@ -2,6 +2,76 @@
 
 {% block title %}仪表盘 - 股票分析系统{% endblock %}
 
+{% block extra_css %}
+<style>
+    .score-badge {
+        display: inline-block;
+        min-width: 36px;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-weight: 700;
+        font-size: 0.82rem;
+        text-align: center;
+    }
+    .score-high   { background: #d1fae5; color: #065f46; }
+    .score-mid    { background: #fef3c7; color: #92400e; }
+    .score-low    { background: #fee2e2; color: #991b1b; }
+    .action-badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .action-buy    { background: #d1fae5; color: #065f46; }
+    .action-hold   { background: #f3f4f6; color: #4b5563; }
+    .action-sell   { background: #fee2e2; color: #991b1b; }
+    .action-warn   { background: #fef3c7; color: #92400e; }
+    .pnl-pos { color: #059669; font-weight: 600; }
+    .pnl-neg { color: #dc2626; font-weight: 600; }
+    .dim-bar {
+        height: 6px;
+        border-radius: 3px;
+        background: #e5e7eb;
+        overflow: hidden;
+    }
+    .dim-bar-fill {
+        height: 100%;
+        border-radius: 3px;
+        transition: width 0.4s;
+    }
+    .weight-slider-label {
+        font-size: 0.82rem;
+        font-weight: 600;
+    }
+    .weight-desc {
+        font-size: 0.72rem;
+        color: #6b7280;
+        line-height: 1.3;
+        margin-top: 1px;
+        margin-bottom: 4px;
+    }
+    .dim-tooltip {
+        max-width: 280px;
+        text-align: left;
+        font-size: 0.78rem;
+        line-height: 1.5;
+    }
+    .dim-tooltip .dim-tip-title {
+        font-weight: 700;
+        margin-bottom: 3px;
+    }
+    .dim-tooltip .dim-tip-detail {
+        color: #d1d5db;
+        font-size: 0.72rem;
+    }
+    .score-detail-row td { font-size: 0.8rem; padding: 4px 8px; }
+    #scoreTable th { font-size: 0.82rem; white-space: nowrap; }
+    #scoreTable td { font-size: 0.82rem; vertical-align: middle; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="row">
     <div class="col-12">
@@ -94,62 +164,67 @@
     </div>
 </div>
 
-<!-- Recent Stocks and News -->
+<!-- Daily Recommendation + AI Insight -->
 <div class="row">
-    <div class="col-md-6">
+    <!-- 每日交易建议（评分驱动） -->
+    <div class="col-md-7">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="card-title mb-0">
-                    <i class="bi bi-clock-history"></i> 最近添加的股票
+                    <i class="bi bi-trophy text-primary"></i> 每日交易建议
                 </h5>
-                <a href="{{ url_for('web.stock_pool') }}" class="btn btn-sm btn-primary">查看全部</a>
+                <div class="d-flex gap-1">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="openWeightModal()" title="评分权重设置">
+                        <i class="bi bi-gear"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="loadDailyScores()" id="scoreRefreshBtn" title="刷新评分">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
+                </div>
             </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
-                        <thead>
-                            <tr>
-                                <th>代码</th>
-                                <th>名称</th>
-                                <th>当前价格</th>
-                                <th>市值</th>
-                                <th>添加时间</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for stock in recent_stocks %}
-                            <tr>
-                                <td><strong>{{ stock.symbol }}</strong></td>
-                                <td>{{ stock.name }}</td>
-                                <td>
-                                    {% if stock.current_price %}
-                                        <strong class="text-success">${{ "%.2f"|format(stock.current_price) }}</strong>
-                                    {% else %}
-                                        <span class="text-muted">N/A</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if stock.market_cap %}
-                                        ${{ "%.1f"|format(stock.market_cap) }}B
-                                    {% else %}
-                                        <span class="text-muted">N/A</span>
-                                    {% endif %}
-                                </td>
-                                <td><small class="text-muted">{{ stock.created_at.strftime('%Y-%m-%d') if stock.created_at else 'N/A' }}</small></td>
-                            </tr>
-                            {% else %}
-                            <tr>
-                                <td colspan="5" class="text-center text-muted">暂无股票</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+            <div class="card-body p-0" style="max-height:420px; overflow-y:auto;">
+                <!-- 加载占位 -->
+                <div id="scorePlaceholder" class="text-center py-4">
+                    <i class="bi bi-trophy text-primary" style="font-size:2.5rem; opacity:0.5;"></i>
+                    <p class="text-muted mt-2 mb-3">基于 5 维度评分系统，结合持仓情况生成操作建议</p>
+                    <button class="btn btn-primary btn-sm" onclick="loadDailyScores()">
+                        <i class="bi bi-calculator me-1"></i>生成评分
+                    </button>
+                </div>
+                <!-- 骨架屏 -->
+                <div id="scoreSkeleton" style="display:none;" class="p-3">
+                    <div class="placeholder-glow mb-2"><span class="placeholder col-12 rounded" style="height:28px;"></span></div>
+                    <div class="placeholder-glow mb-2"><span class="placeholder col-12 rounded" style="height:28px;"></span></div>
+                    <div class="placeholder-glow mb-2"><span class="placeholder col-12 rounded" style="height:28px;"></span></div>
+                    <div class="placeholder-glow mb-2"><span class="placeholder col-12 rounded" style="height:28px;"></span></div>
+                    <div class="placeholder-glow"><span class="placeholder col-12 rounded" style="height:28px;"></span></div>
+                </div>
+                <!-- 评分表格 -->
+                <table class="table table-hover table-sm mb-0" id="scoreTable" style="display:none;">
+                    <thead class="table-light">
+                        <tr>
+                            <th>代码</th>
+                            <th>持仓</th>
+                            <th>盈亏</th>
+                            <th>评分</th>
+                            <th>维度 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
+                                title="5 个评分维度（悬停色条查看详情）:&#10;&#10;估值 — PE/PB/PS/股息率，越低越好&#10;盈利 — 连续盈利/利润率/现金流质量&#10;健康 — 净现金/负债率/流动性&#10;护城 — 毛利率水平与趋势/市场份额&#10;新闻 — 当日AI新闻情绪分析"></i></th>
+                            <th>建议</th>
+                        </tr>
+                    </thead>
+                    <tbody id="scoreTableBody"></tbody>
+                </table>
+                <!-- 错误提示 -->
+                <div id="scoreError" style="display:none" class="text-muted text-center small py-3">
+                    <i class="bi bi-exclamation-circle me-1"></i>
+                    <span id="scoreErrorMsg">加载失败</span>
                 </div>
             </div>
         </div>
     </div>
 
-    <div class="col-md-6">
+    <!-- AI 选股建议 -->
+    <div class="col-md-5">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="card-title mb-0">
@@ -159,8 +234,7 @@
                     <i class="bi bi-arrow-clockwise"></i>
                 </button>
             </div>
-            <div class="card-body" id="insightCardBody" style="overflow-y:auto; max-height:320px;">
-                <!-- 初始状态：点击生成 -->
+            <div class="card-body" id="insightCardBody" style="overflow-y:auto; max-height:370px;">
                 <div id="insightPlaceholder" class="text-center py-4">
                     <i class="bi bi-stars text-warning" style="font-size:2.5rem; opacity:0.5;"></i>
                     <p class="text-muted mt-2 mb-3">AI 将结合股票池数据、投资原则和新闻分析<br>生成个性化选股建议</p>
@@ -168,7 +242,6 @@
                         <i class="bi bi-robot me-1"></i>生成 AI 建议
                     </button>
                 </div>
-                <!-- 骨架屏（加载中） -->
                 <div id="insightSkeleton" style="display:none;">
                     <div class="placeholder-glow mb-2"><span class="placeholder col-8 rounded"></span></div>
                     <div class="placeholder-glow mb-2"><span class="placeholder col-10 rounded"></span></div>
@@ -176,9 +249,7 @@
                     <div class="placeholder-glow mb-2"><span class="placeholder col-9 rounded"></span></div>
                     <div class="placeholder-glow"><span class="placeholder col-6 rounded"></span></div>
                 </div>
-                <!-- AI 内容区 -->
                 <div id="insightContent" style="display:none; font-size:0.88rem; line-height:1.7;"></div>
-                <!-- 错误提示 -->
                 <div id="insightError" style="display:none" class="text-muted text-center small py-3">
                     <i class="bi bi-exclamation-circle me-1"></i>
                     <span id="insightErrorMsg">加载失败</span>
@@ -188,21 +259,169 @@
     </div>
 </div>
 
+<!-- 权重设置 Modal -->
+<div class="modal fade" id="weightModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title"><i class="bi bi-sliders me-1"></i>评分权重设置</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="weightModalBody">
+                <p class="text-muted small mb-3">调整各维度权重（总和自动归一化为 100%）</p>
+                <div id="weightSliders"></div>
+                <div class="mt-2 text-end">
+                    <small class="text-muted">合计: <strong id="weightTotal">100%</strong></small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetWeights()">恢复默认</button>
+                <button type="button" class="btn btn-sm btn-primary" onclick="saveWeights()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
-<!-- marked.js for AI insight Markdown rendering -->
 <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
 <script>
 marked.setOptions({ breaks: true, gfm: true });
 
-/* ===== AI 选股建议 ===== */
-const INSIGHT_CACHE_KEY = 'dashboard_insight';
-
+/* ===== 通用工具 ===== */
 function getTodayStr() {
     const d = new Date();
     return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
+
+function scoreClass(score) {
+    if (score >= 65) return 'score-high';
+    if (score >= 40) return 'score-mid';
+    return 'score-low';
+}
+
+function actionClass(action) {
+    if (['buy','add'].includes(action)) return 'action-buy';
+    if (['sell','avoid'].includes(action)) return 'action-sell';
+    if (action === 'reduce') return 'action-warn';
+    return 'action-hold';
+}
+
+function dimBarColor(score) {
+    if (score >= 65) return '#10b981';
+    if (score >= 40) return '#f59e0b';
+    return '#ef4444';
+}
+
+/* ===== 每日评分 ===== */
+const SCORE_CACHE_KEY = 'dashboard_scores';
+
+function initScores() {
+    try {
+        const cached = JSON.parse(localStorage.getItem(SCORE_CACHE_KEY));
+        if (cached && cached.date === getTodayStr() && cached.scores) {
+            renderScoreTable(cached.scores);
+        }
+    } catch(e) {}
+}
+
+async function loadDailyScores() {
+    document.getElementById('scorePlaceholder').style.display = 'none';
+    document.getElementById('scoreSkeleton').style.display = 'block';
+    document.getElementById('scoreTable').style.display = 'none';
+    document.getElementById('scoreError').style.display = 'none';
+    const btn = document.getElementById('scoreRefreshBtn');
+    if (btn) btn.disabled = true;
+
+    try {
+        const res = await fetch('/api/agent/daily_scores');
+        const data = await res.json();
+        document.getElementById('scoreSkeleton').style.display = 'none';
+        if (btn) btn.disabled = false;
+
+        if (data.success && data.scores) {
+            renderScoreTable(data.scores);
+            localStorage.setItem(SCORE_CACHE_KEY, JSON.stringify({
+                date: getTodayStr(),
+                scores: data.scores
+            }));
+        } else {
+            document.getElementById('scoreErrorMsg').textContent = data.error || '评分失败';
+            document.getElementById('scoreError').style.display = 'block';
+        }
+    } catch (e) {
+        document.getElementById('scoreSkeleton').style.display = 'none';
+        if (btn) btn.disabled = false;
+        document.getElementById('scoreErrorMsg').textContent = '网络错误: ' + e.message;
+        document.getElementById('scoreError').style.display = 'block';
+    }
+}
+
+function renderScoreTable(scores) {
+    const tbody = document.getElementById('scoreTableBody');
+    tbody.innerHTML = '';
+
+    if (!scores || scores.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">股票池暂无数据</td></tr>';
+        document.getElementById('scoreTable').style.display = 'table';
+        return;
+    }
+
+    const dimKeys = ['valuation','earnings_quality','financial_health','moat','news_sentiment'];
+    const dimShort = {valuation:'估值', earnings_quality:'盈利', financial_health:'健康', moat:'护城', news_sentiment:'新闻'};
+    const dimFull  = {valuation:'估值', earnings_quality:'盈利质量', financial_health:'财务健康', moat:'护城河', news_sentiment:'新闻情绪'};
+
+    scores.forEach(s => {
+        const h = s.holding;
+        const sharesText = h ? `${h.net_shares}股` : '<span class="text-muted">-</span>';
+        const pnlText = h && h.unrealized_pnl_pct != null
+            ? `<span class="${h.unrealized_pnl_pct >= 0 ? 'pnl-pos' : 'pnl-neg'}">${h.unrealized_pnl_pct >= 0 ? '+' : ''}${h.unrealized_pnl_pct.toFixed(1)}%</span>`
+            : '<span class="text-muted">-</span>';
+
+        // 维度迷你条 — hover 显示分项详情
+        let dimBars = '<div class="d-flex gap-1" style="min-width:120px;">';
+        dimKeys.forEach(dk => {
+            const dim = (s.dimensions || {})[dk];
+            const ds = dim ? dim.score : 50;
+            // 构建 tooltip 内容：维度名(分数) + 各分项得分
+            let tipLines = [`${dimFull[dk]}: ${ds}分`];
+            if (dim && dim.details) {
+                Object.entries(dim.details).forEach(([k, v]) => {
+                    tipLines.push(`  ${k}: ${v}`);
+                });
+            }
+            const tipText = tipLines.join('&#10;');
+            dimBars += `<div style="flex:1; cursor:help;" title="${tipText}">
+                <div class="dim-bar"><div class="dim-bar-fill" style="width:${ds}%; background:${dimBarColor(ds)};"></div></div>
+            </div>`;
+        });
+        dimBars += '</div>';
+        dimBars += `<div class="text-muted" style="font-size:0.65rem; display:flex; justify-content:space-between;">`;
+        dimKeys.forEach(dk => { dimBars += `<span>${dimShort[dk]}</span>`; });
+        dimBars += '</div>';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><a href="/stocks/${s.symbol}" class="fw-bold text-decoration-none">${s.symbol}</a>
+                <br><small class="text-muted">${(s.stock_name || '').substring(0,10)}</small></td>
+            <td>${sharesText}</td>
+            <td>${pnlText}</td>
+            <td><span class="score-badge ${scoreClass(s.total_score)}">${s.total_score}</span></td>
+            <td>${dimBars}</td>
+            <td><span class="action-badge ${actionClass(s.action)}">${s.action_emoji} ${s.action_label}</span></td>
+        `;
+        tbody.appendChild(tr);
+    });
+
+    document.getElementById('scorePlaceholder').style.display = 'none';
+    document.getElementById('scoreTable').style.display = 'table';
+}
+
+initScores();
+
+/* ===== AI 选股建议 ===== */
+const INSIGHT_CACHE_KEY = 'dashboard_insight';
 
 function showInsightContent(markdown) {
     document.getElementById('insightPlaceholder').style.display = 'none';
@@ -219,7 +438,7 @@ function initInsight() {
         if (cached && cached.date === getTodayStr() && cached.content) {
             showInsightContent(cached.content);
         }
-    } catch(e) { /* ignore parse errors */ }
+    } catch(e) {}
 }
 
 async function loadInsight() {
@@ -243,26 +462,110 @@ async function loadInsight() {
                 content: data.insight
             }));
         } else {
-            const errMsg = document.getElementById('insightErrorMsg');
-            if (errMsg) errMsg.textContent = data.error || '生成失败，请稍后重试';
+            document.getElementById('insightErrorMsg').textContent = data.error || '生成失败';
             document.getElementById('insightError').style.display = 'block';
         }
     } catch (e) {
         document.getElementById('insightSkeleton').style.display = 'none';
         if (btn) btn.disabled = false;
-        const errMsg = document.getElementById('insightErrorMsg');
-        if (errMsg) errMsg.textContent = '网络请求失败：' + e.message;
+        document.getElementById('insightErrorMsg').textContent = '网络错误: ' + e.message;
         document.getElementById('insightError').style.display = 'block';
     }
 }
 
-function refreshInsight() {
-    loadInsight();
-}
-
+function refreshInsight() { loadInsight(); }
 initInsight();
 
-// Sector Distribution Chart
+/* ===== 权重设置 ===== */
+let currentWeights = {};
+const DEFAULT_WEIGHTS = {valuation:0.30, earnings_quality:0.25, financial_health:0.20, moat:0.15, news_sentiment:0.10};
+const WEIGHT_LABELS = {valuation:'估值', earnings_quality:'盈利质量', financial_health:'财务健康', moat:'护城河', news_sentiment:'新闻情绪'};
+const WEIGHT_DESCS = {
+    valuation:        '衡量当前股价是否便宜。综合 PE（市盈率）、PB（市净率）、PS（市销率）和股息率，越低分越高。',
+    earnings_quality: '衡量公司赚钱的质量。看是否连续3年盈利、净利率/毛利率水平、经营现金流与利润的匹配度。',
+    financial_health:  '衡量公司的财务安全性。看净现金是否为正、借款占总资产比例、流动性是否充足、净资产是否为正。',
+    moat:             '衡量公司的竞争壁垒。看毛利率水平及趋势（稳定/上升=强）、市场份额数据。',
+    news_sentiment:   '反映市场对公司的短期情绪。基于当日 AI 新闻分析结果：看多(85分)/中性(50分)/看空(15分)。',
+};
+const WEIGHT_METRICS = {
+    valuation:        'PE, PB, PS, 股息率',
+    earnings_quality: '连续盈利, 净利率, 毛利率, 现金流/利润比',
+    financial_health:  '净现金, 借款/总资产, 流动性, 净资产',
+    moat:             '毛利率水平, 毛利率趋势, 市场份额',
+    news_sentiment:   '当日新闻 AI 情绪分析',
+};
+
+function openWeightModal() {
+    fetch('/api/agent/scorer_weights')
+        .then(r => r.json())
+        .then(data => {
+            currentWeights = data.weights || DEFAULT_WEIGHTS;
+            renderWeightSliders();
+            new bootstrap.Modal(document.getElementById('weightModal')).show();
+        })
+        .catch(() => {
+            currentWeights = {...DEFAULT_WEIGHTS};
+            renderWeightSliders();
+            new bootstrap.Modal(document.getElementById('weightModal')).show();
+        });
+}
+
+function renderWeightSliders() {
+    const container = document.getElementById('weightSliders');
+    container.innerHTML = '';
+    const keys = Object.keys(DEFAULT_WEIGHTS);
+    keys.forEach(k => {
+        const pct = Math.round((currentWeights[k] || 0) * 100);
+        const div = document.createElement('div');
+        div.className = 'mb-3';
+        div.innerHTML = `
+            <div class="d-flex justify-content-between weight-slider-label">
+                <span>${WEIGHT_LABELS[k]}</span>
+                <span id="wval_${k}">${pct}%</span>
+            </div>
+            <div class="weight-desc">${WEIGHT_DESCS[k]}<br><span style="color:#9ca3af;">指标: ${WEIGHT_METRICS[k]}</span></div>
+            <input type="range" class="form-range" min="0" max="60" value="${pct}"
+                   id="wslider_${k}" oninput="onWeightChange('${k}', this.value)">
+        `;
+        container.appendChild(div);
+    });
+    updateWeightTotal();
+}
+
+function onWeightChange(key, val) {
+    currentWeights[key] = parseInt(val) / 100;
+    document.getElementById('wval_' + key).textContent = val + '%';
+    updateWeightTotal();
+}
+
+function updateWeightTotal() {
+    const total = Object.values(currentWeights).reduce((a,b) => a+b, 0);
+    document.getElementById('weightTotal').textContent = Math.round(total * 100) + '%';
+}
+
+function resetWeights() {
+    currentWeights = {...DEFAULT_WEIGHTS};
+    renderWeightSliders();
+}
+
+function saveWeights() {
+    fetch('/api/agent/scorer_weights', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({weights: currentWeights})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('weightModal')).hide();
+            // 清除缓存并重新加载评分
+            localStorage.removeItem(SCORE_CACHE_KEY);
+            loadDailyScores();
+        }
+    });
+}
+
+/* ===== Charts ===== */
 const sectorData = {{ sector_data | tojson }};
 const sectorCtx = document.getElementById('sectorChart').getContext('2d');
 new Chart(sectorCtx, {
@@ -280,15 +583,10 @@ new Chart(sectorCtx, {
     options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-            legend: {
-                position: 'right'
-            }
-        }
+        plugins: { legend: { position: 'right' } }
     }
 });
 
-// Market Cap Distribution Chart
 const marketCapData = {{ market_cap_data | tojson }};
 const marketCapCtx = document.getElementById('marketCapChart').getContext('2d');
 new Chart(marketCapCtx, {
@@ -304,17 +602,8 @@ new Chart(marketCapCtx, {
     options: {
         responsive: true,
         maintainAspectRatio: false,
-        scales: {
-            y: {
-                beginAtZero: true,
-                ticks: {
-                    stepSize: 1
-                }
-            }
-        }
+        scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
     }
 });
-
-// AI 选股建议：页面加载时从 localStorage 恢复当天缓存，手动刷新时重新生成
 </script>
 {% endblock %}

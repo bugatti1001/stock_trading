@@ -140,3 +140,63 @@ def dashboard_insight():
     except Exception as e:
         logger.error(f"dashboard_insight 错误: {e}")
         return error_response(str(e), 500)
+
+
+# ============================================================
+# 每日评分推荐
+# ============================================================
+
+@bp.route('/api/agent/daily_scores', methods=['GET'])
+def daily_scores():
+    """获取股票池评分推荐列表"""
+    try:
+        from app.services.stock_scorer import score_all_stocks
+        scores = score_all_stocks()
+        return success_response(scores=scores)
+    except Exception as e:
+        logger.error(f"daily_scores 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/daily_scores/ai_reasoning', methods=['POST'])
+def daily_scores_ai_reasoning():
+    """基于评分结果生成 AI 补充分析"""
+    try:
+        from app.services.stock_scorer import score_all_stocks, generate_ai_recommendations
+        scores = score_all_stocks()
+        reasoning = generate_ai_recommendations(scores)
+        return success_response(reasoning=reasoning)
+    except Exception as e:
+        logger.error(f"daily_scores_ai_reasoning 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/scorer_weights', methods=['GET'])
+def get_scorer_weights():
+    """获取当前评分权重"""
+    try:
+        from app.services.stock_scorer import get_user_weights, DIMENSION_LABELS
+        weights = get_user_weights()
+        return success_response(
+            weights=weights,
+            labels=DIMENSION_LABELS,
+        )
+    except Exception as e:
+        logger.error(f"get_scorer_weights 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/scorer_weights', methods=['PUT'])
+def update_scorer_weights():
+    """更新评分权重"""
+    try:
+        data = request.get_json()
+        if not data or 'weights' not in data:
+            return error_response('缺少 weights 字段', 400)
+
+        from app.services.stock_scorer import save_user_weights
+        saved = save_user_weights(data['weights'])
+        return success_response(weights=saved)
+    except Exception as e:
+        logger.error(f"update_scorer_weights 错误: {e}")
+        return error_response(str(e), 500)

@@ -65,11 +65,6 @@ def dashboard():
         'conversations_count': db_session.query(func.count(Conversation.id)).scalar() or 0,
     }
 
-    # Recent stocks
-    recent_stocks = db_session.query(Stock).filter_by(in_pool=True).order_by(
-        desc(Stock.created_at)
-    ).limit(5).all()
-
     # Sector distribution - single aggregated query
     sector_distribution = db_session.query(
         Stock.sector,
@@ -94,7 +89,6 @@ def dashboard():
     return render_template(
         'dashboard.html',
         stats=stats,
-        recent_stocks=recent_stocks,
         sector_data=sector_data,
         market_cap_data=market_cap_data
     )
