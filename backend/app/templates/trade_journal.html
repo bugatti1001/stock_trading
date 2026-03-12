@@ -66,7 +66,7 @@
     <h4 class="mb-0"><i class="bi bi-journal-check me-2 text-primary"></i>交易日记</h4>
     <div class="d-flex gap-2">
         <button class="btn btn-outline-info" onclick="document.getElementById('importModal') && new bootstrap.Modal(document.getElementById('importModal')).show()">
-            <i class="bi bi-upload me-1"></i>导入 Robinhood CSV
+            <i class="bi bi-upload me-1"></i>导入 CSV
         </button>
         <a href="/api/trades/export" class="btn btn-outline-success">
             <i class="bi bi-download me-1"></i>导出 CSV
@@ -242,13 +242,15 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-upload me-2"></i>导入 Robinhood 交易记录</h5>
+                <h5 class="modal-title"><i class="bi bi-upload me-2"></i>导入交易记录 / 持仓快照</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <p class="text-muted small">
-                    上传从 Robinhood 导出的 CSV 文件。系统将自动识别 Buy/Sell 交易记录，
-                    跳过分红、费用等非交易行。重复记录会自动去重。
+                    支持两种 CSV 格式，系统自动识别：<br>
+                    <strong>① Robinhood 交易历史</strong>：含 Activity Date, Trans Code, Instrument, Price, Quantity 等列<br>
+                    <strong>② 持仓快照</strong>：含 average price, share number 列（每行一只股票，导入为买入记录）<br>
+                    重复记录会自动去重。
                 </p>
                 <div class="mb-3">
                     <label class="form-label fw-bold">选择 CSV 文件</label>
@@ -287,35 +289,44 @@ async function submitImportCSV() {
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
 
+    const resultDiv = document.getElementById('importResultContent');
+    const resultWrap = document.getElementById('importResult');
     try {
         const res = await fetch('/api/trades/import_csv', { method: 'POST', body: formData });
         const data = await res.json();
-        const resultDiv = document.getElementById('importResultContent');
+        console.log('import response:', res.status, data);
+
+        if (res.status === 401) {
+            window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+            return;
+        }
 
         if (data.success) {
             resultDiv.className = 'alert alert-success mb-0';
-            let msg = `成功导入 <strong>${data.imported}</strong> 条交易记录`;
+            const fmtLabel = data.format === 'position_snapshot' ? '持仓快照' : 'Robinhood 交易历史';
+            let msg = `<small class="text-muted">识别格式: ${fmtLabel}</small><br>`;
+            msg += `成功导入 <strong>${data.imported}</strong> 条交易记录`;
             if (data.skipped > 0) msg += `，跳过 ${data.skipped} 条（重复/非交易行）`;
+            if (data.trade_date) msg += `<br><small>交易日期: ${data.trade_date}</small>`;
             if (data.errors && data.errors.length > 0) {
                 msg += '<br><small class="text-muted">异常: ' + data.errors.slice(0,5).join('; ') + '</small>';
             }
             resultDiv.innerHTML = msg;
-            // 刷新列表
             if (typeof loadTrades === 'function') loadTrades();
             if (typeof loadStats === 'function') loadStats();
         } else {
             resultDiv.className = 'alert alert-danger mb-0';
             resultDiv.textContent = data.error || '导入失败';
         }
-        document.getElementById('importResult').style.display = 'block';
     } catch (e) {
-        const resultDiv = document.getElementById('importResultContent');
+        console.error('import error:', e);
         resultDiv.className = 'alert alert-danger mb-0';
         resultDiv.textContent = '网络错误: ' + e.message;
-        document.getElementById('importResult').style.display = 'block';
+    } finally {
+        resultWrap.style.display = 'block';
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-upload me-1"></i>上传导入';
     }
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-upload me-1"></i>上传导入';
 }
 
 // ── State ──────────────────────────────────────────────────────

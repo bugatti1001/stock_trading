@@ -5,6 +5,7 @@ Trade Journal API Routes
 import csv
 import io
 import logging
+import re
 from datetime import date, datetime
 from flask import Blueprint, request, Response
 from sqlalchemy import desc
@@ -269,134 +270,239 @@ def portfolio() -> tuple:
 @bp.route('/api/trades/import_csv', methods=['POST'])
 def import_csv() -> tuple:
     """
-    导入 Robinhood 交易记录 CSV
+    导入交易记录 CSV，自动识别两种格式：
 
-    Robinhood CSV 列名:
-    Activity Date, Process Date, Settle Date, Instrument, Description,
-    Trans Code, Quantity, Price, Amount
+    1. Robinhood 交易历史 CSV:
+       Activity Date, Process Date, Settle Date, Instrument, Description,
+       Trans Code, Quantity, Price, Amount
+
+    2. 持仓快照 CSV (如从 Robinhood 导出的当前持仓):
+       ,average price,share number
+       NIO,3.85,4667.77196
+       第一列为股票代码，无列头或列头为空
     """
     try:
         if 'file' not in request.files:
             return error_response('请上传 CSV 文件')
 
         file = request.files['file']
-        if not file.filename or not file.filename.lower().endswith('.csv'):
+        filename = file.filename or ''
+        if not filename.lower().endswith('.csv'):
             return error_response('请上传 .csv 格式文件')
 
         # 读取 CSV 内容
         content = file.read().decode('utf-8-sig')
         reader = csv.DictReader(io.StringIO(content))
 
-        # 标准化列名（去空格、小写）
         if reader.fieldnames is None:
             return error_response('CSV 文件为空或格式不正确')
 
-        # Robinhood Trans Code 映射
-        ACTION_MAP = {
-            'Buy': 'buy', 'BUY': 'buy',
-            'Sell': 'sell', 'SELL': 'sell',
-        }
-        # 支持的日期格式
-        DATE_FORMATS = ['%m/%d/%Y', '%Y-%m-%d', '%m-%d-%Y', '%m/%d/%y']
-
-        imported = 0
-        skipped = 0
-        errors_list = []
-
-        for row_num, row in enumerate(reader, start=2):
-            # 标准化 key
-            row = {k.strip(): v.strip() if v else '' for k, v in row.items()}
-
-            # 提取 Trans Code
-            trans_code = row.get('Trans Code', row.get('trans_code', row.get('TransCode', '')))
-            action = ACTION_MAP.get(trans_code)
-            if not action:
-                skipped += 1
-                continue  # 跳过非买卖行（分红、费用等）
-
-            # 提取 symbol（Instrument 列）
-            symbol = row.get('Instrument', row.get('instrument', row.get('Symbol', ''))).strip().upper()
-            if not symbol:
-                skipped += 1
-                errors_list.append(f"行{row_num}: 缺少股票代码")
-                continue
-
-            # 提取价格和数量
-            try:
-                price_str = row.get('Price', row.get('price', '0'))
-                price_str = price_str.replace('$', '').replace(',', '').strip()
-                price = float(price_str) if price_str else 0
-
-                qty_str = row.get('Quantity', row.get('quantity', '0'))
-                qty_str = qty_str.replace(',', '').strip()
-                quantity = abs(float(qty_str)) if qty_str else 0
-
-                if price <= 0 or quantity <= 0:
-                    skipped += 1
-                    continue
-            except (ValueError, TypeError):
-                skipped += 1
-                errors_list.append(f"行{row_num}: 价格或数量格式错误")
-                continue
-
-            # 提取日期
-            date_str = row.get('Activity Date', row.get('activity_date', row.get('Date', ''))).strip()
-            trade_date = None
-            for fmt in DATE_FORMATS:
-                try:
-                    trade_date = datetime.strptime(date_str, fmt).date()
-                    break
-                except ValueError:
-                    continue
-            if not trade_date:
-                skipped += 1
-                errors_list.append(f"行{row_num}: 日期格式无法解析 '{date_str}'")
-                continue
-
-            # 查重：相同 (symbol, trade_date, action, price, quantity) 跳过
-            existing = db_session.query(TradeRecord).filter_by(
-                symbol=symbol,
-                trade_date=trade_date,
-                action=action,
-                price=price,
-                quantity=quantity,
-            ).first()
-            if existing:
-                skipped += 1
-                continue
-
-            # 关联 Stock
-            stock = db_session.query(Stock).filter_by(symbol=symbol).first()
-
-            trade = TradeRecord(
-                stock_id=stock.id if stock else None,
-                symbol=symbol,
-                action=action,
-                price=price,
-                quantity=quantity,
-                trade_date=trade_date,
-                reason_text='Robinhood CSV 导入',
-            )
-            db_session.add(trade)
-            imported += 1
-
-        db_session.commit()
-
-        # 清除持仓缓存
-        from app.services.portfolio_service import invalidate_portfolio_cache
-        invalidate_portfolio_cache()
-
-        return success_response(
-            imported=imported,
-            skipped=skipped,
-            errors=errors_list[:20],  # 最多返回 20 条错误
-            status_code=201,
+        # 自动检测格式：持仓快照 vs Robinhood 交易历史
+        normalized_fields = {f.strip().lower() for f in reader.fieldnames if f}
+        is_position_snapshot = (
+            'average price' in normalized_fields and 'share number' in normalized_fields
         )
+
+        if is_position_snapshot:
+            return _import_position_snapshot(reader, filename)
+        else:
+            return _import_robinhood_trades(reader)
 
     except Exception as e:
         db_session.rollback()
         logger.error(f"import_csv 错误: {e}")
         return error_response(str(e), status_code=500)
+
+
+def _extract_date_from_filename(filename: str) -> date:
+    """尝试从文件名提取日期，如 '2026-03-12 stock position.csv' → 2026-03-12"""
+    m = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+    if m:
+        try:
+            return date.fromisoformat(m.group(1))
+        except ValueError:
+            pass
+    return date.today()
+
+
+def _import_position_snapshot(reader, filename: str) -> tuple:
+    """导入持仓快照 CSV：每行视为一笔 buy 交易"""
+    trade_date = _extract_date_from_filename(filename)
+
+    imported = 0
+    skipped = 0
+    errors_list = []
+
+    for row_num, row in enumerate(reader, start=2):
+        row = {k.strip(): v.strip() if v else '' for k, v in row.items()}
+
+        # 第一列（列头为空或空字符串）存储 symbol
+        symbol = ''
+        for key in row:
+            if key == '' or key is None:
+                symbol = row[key].strip().upper()
+                break
+        # 也尝试常见列名
+        if not symbol:
+            symbol = row.get('symbol', row.get('Symbol', row.get('SYMBOL', ''))).strip().upper()
+        if not symbol:
+            skipped += 1
+            errors_list.append(f"行{row_num}: 缺少股票代码")
+            continue
+
+        # 提取价格和数量
+        try:
+            price_str = row.get('average price', row.get('Average Price', '0'))
+            price_str = price_str.replace('$', '').replace(',', '').strip()
+            price = float(price_str) if price_str else 0
+
+            qty_str = row.get('share number', row.get('Share Number', '0'))
+            qty_str = qty_str.replace(',', '').strip()
+            quantity = abs(float(qty_str)) if qty_str else 0
+
+            if price <= 0 or quantity <= 0:
+                skipped += 1
+                continue
+        except (ValueError, TypeError):
+            skipped += 1
+            errors_list.append(f"行{row_num}: 价格或数量格式错误")
+            continue
+
+        # 查重
+        existing = db_session.query(TradeRecord).filter_by(
+            symbol=symbol,
+            trade_date=trade_date,
+            action='buy',
+            price=price,
+            quantity=quantity,
+        ).first()
+        if existing:
+            skipped += 1
+            continue
+
+        stock = db_session.query(Stock).filter_by(symbol=symbol).first()
+
+        trade = TradeRecord(
+            stock_id=stock.id if stock else None,
+            symbol=symbol,
+            action='buy',
+            price=price,
+            quantity=quantity,
+            trade_date=trade_date,
+            reason_text=f'持仓快照导入 ({trade_date.isoformat()})',
+        )
+        db_session.add(trade)
+        imported += 1
+
+    db_session.commit()
+
+    from app.services.portfolio_service import invalidate_portfolio_cache
+    invalidate_portfolio_cache()
+
+    return success_response(
+        imported=imported,
+        skipped=skipped,
+        errors=errors_list[:20],
+        format='position_snapshot',
+        trade_date=trade_date.isoformat(),
+        status_code=201,
+    )
+
+
+def _import_robinhood_trades(reader) -> tuple:
+    """导入 Robinhood 交易历史 CSV"""
+    ACTION_MAP = {
+        'Buy': 'buy', 'BUY': 'buy',
+        'Sell': 'sell', 'SELL': 'sell',
+    }
+    DATE_FORMATS = ['%m/%d/%Y', '%Y-%m-%d', '%m-%d-%Y', '%m/%d/%y']
+
+    imported = 0
+    skipped = 0
+    errors_list = []
+
+    for row_num, row in enumerate(reader, start=2):
+        row = {k.strip(): v.strip() if v else '' for k, v in row.items()}
+
+        trans_code = row.get('Trans Code', row.get('trans_code', row.get('TransCode', '')))
+        action = ACTION_MAP.get(trans_code)
+        if not action:
+            skipped += 1
+            continue
+
+        symbol = row.get('Instrument', row.get('instrument', row.get('Symbol', ''))).strip().upper()
+        if not symbol:
+            skipped += 1
+            errors_list.append(f"行{row_num}: 缺少股票代码")
+            continue
+
+        try:
+            price_str = row.get('Price', row.get('price', '0'))
+            price_str = price_str.replace('$', '').replace(',', '').strip()
+            price = float(price_str) if price_str else 0
+
+            qty_str = row.get('Quantity', row.get('quantity', '0'))
+            qty_str = qty_str.replace(',', '').strip()
+            quantity = abs(float(qty_str)) if qty_str else 0
+
+            if price <= 0 or quantity <= 0:
+                skipped += 1
+                continue
+        except (ValueError, TypeError):
+            skipped += 1
+            errors_list.append(f"行{row_num}: 价格或数量格式错误")
+            continue
+
+        date_str = row.get('Activity Date', row.get('activity_date', row.get('Date', ''))).strip()
+        trade_date = None
+        for fmt in DATE_FORMATS:
+            try:
+                trade_date = datetime.strptime(date_str, fmt).date()
+                break
+            except ValueError:
+                continue
+        if not trade_date:
+            skipped += 1
+            errors_list.append(f"行{row_num}: 日期格式无法解析 '{date_str}'")
+            continue
+
+        existing = db_session.query(TradeRecord).filter_by(
+            symbol=symbol,
+            trade_date=trade_date,
+            action=action,
+            price=price,
+            quantity=quantity,
+        ).first()
+        if existing:
+            skipped += 1
+            continue
+
+        stock = db_session.query(Stock).filter_by(symbol=symbol).first()
+
+        trade = TradeRecord(
+            stock_id=stock.id if stock else None,
+            symbol=symbol,
+            action=action,
+            price=price,
+            quantity=quantity,
+            trade_date=trade_date,
+            reason_text='Robinhood CSV 导入',
+        )
+        db_session.add(trade)
+        imported += 1
+
+    db_session.commit()
+
+    from app.services.portfolio_service import invalidate_portfolio_cache
+    invalidate_portfolio_cache()
+
+    return success_response(
+        imported=imported,
+        skipped=skipped,
+        errors=errors_list[:20],
+        format='robinhood',
+        status_code=201,
+    )
 
 
 @bp.route('/api/trades/export', methods=['GET'])
