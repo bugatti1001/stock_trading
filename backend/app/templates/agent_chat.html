@@ -664,7 +664,7 @@
             <i class="bi bi-robot text-primary fs-5"></i>
             <div>
                 <div class="fw-semibold" id="chatTitle">AI 投资助手</div>
-                <div class="text-muted small">基于基本面分析 · Claude Sonnet</div>
+                <div class="text-muted small" id="chatModelInfo">基于基本面分析 · 加载中...</div>
             </div>
             <div class="ms-auto d-flex align-items-center gap-2">
                 <span class="badge bg-light text-muted border small" id="contextBadge">全局上下文</span>
@@ -1563,6 +1563,17 @@ async function saveExtractedPrinciples() {
 
 /* ============ 初始化 ============ */
 document.addEventListener('DOMContentLoaded', async () => {
+    // 动态显示当前 AI 模型
+    try {
+        const provRes = await fetch('/api/agent/ai_provider');
+        const provData = await provRes.json();
+        if (provData.success) {
+            const names = { claude: 'Claude', minimax: 'MiniMax M2.5' };
+            const el = document.getElementById('chatModelInfo');
+            if (el) el.textContent = '基于基本面分析 · ' + (names[provData.provider] || provData.provider);
+        }
+    } catch (e) { /* ignore */ }
+
     await loadConversations();
     // 如果有对话，自动打开最新的
     const first = document.querySelector('.conv-item');
