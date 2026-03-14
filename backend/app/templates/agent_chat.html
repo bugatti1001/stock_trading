@@ -1564,15 +1564,19 @@ async function saveExtractedPrinciples() {
 /* ============ 初始化 ============ */
 document.addEventListener('DOMContentLoaded', async () => {
     // 动态显示当前 AI 模型
+    const _providerNames = { claude: 'Claude', minimax: 'MiniMax M2.5' };
+    function _updateModelLabel(provider) {
+        const el = document.getElementById('chatModelInfo');
+        if (el) el.textContent = '基于基本面分析 · ' + (_providerNames[provider] || provider);
+    }
     try {
         const provRes = await fetch('/api/agent/ai_provider');
         const provData = await provRes.json();
-        if (provData.success) {
-            const names = { claude: 'Claude', minimax: 'MiniMax M2.5' };
-            const el = document.getElementById('chatModelInfo');
-            if (el) el.textContent = '基于基本面分析 · ' + (names[provData.provider] || provData.provider);
-        }
+        if (provData.success) _updateModelLabel(provData.provider);
     } catch (e) { /* ignore */ }
+    window.addEventListener('ai-provider-changed', function(e) {
+        _updateModelLabel(e.detail.provider);
+    });
 
     await loadConversations();
     // 如果有对话，自动打开最新的

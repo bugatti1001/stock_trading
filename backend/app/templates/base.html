@@ -196,7 +196,12 @@
                 body: JSON.stringify({ provider: provider })
             })
             .then(function(r) { return r.json(); })
-            .then(function(d) { if (d.success) updateUI(d.provider); })
+            .then(function(d) {
+                if (d.success) {
+                    updateUI(d.provider);
+                    window.dispatchEvent(new CustomEvent('ai-provider-changed', { detail: { provider: d.provider } }));
+                }
+            })
             .catch(function() {});
         });
     })();
