@@ -77,7 +77,7 @@ def get_ai_provider() -> str:
 
 # MiniMax Configuration
 MINIMAX_BASE_URL = 'https://api.minimaxi.chat/v1'
-MINIMAX_DEFAULT_MODEL = 'MiniMax-Text-01'
+MINIMAX_DEFAULT_MODEL = 'MiniMax-M2.5'
 
 # Supported AI models
 OPENAI_MODELS = {'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'}
@@ -86,7 +86,7 @@ ANTHROPIC_MODELS = {
     'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022',
     'claude-3-opus-20240229'
 }
-MINIMAX_MODELS = {'MiniMax-Text-01'}
+MINIMAX_MODELS = {'MiniMax-M2.5', 'MiniMax-Text-01'}
 
 # Valid principle categories
 VALID_CATEGORIES = {'risk', 'valuation', 'selection', 'behavior'}
