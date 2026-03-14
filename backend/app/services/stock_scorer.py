@@ -635,7 +635,7 @@ def _init_ai_holdings_from_user():
     from app.config.database import db_session
     from app.models.ai_trade_record import AiTradeRecord
     from app.services.portfolio_service import compute_holdings
-    from datetime import date as date_type
+    from datetime import date as date_type, timedelta
 
     existing = db_session.query(AiTradeRecord).first()
     if existing:
@@ -645,7 +645,8 @@ def _init_ai_holdings_from_user():
     if not user_holdings:
         return
 
-    today = date_type.today()
+    # 用昨天的日期作为基准，不影响今天的 AI 交易决策
+    yesterday = date_type.today() - timedelta(days=1)
     for h in user_holdings:
         shares = h.get('net_shares', 0)
         price = h.get('avg_cost', 0) or h.get('current_price', 0)
@@ -656,7 +657,7 @@ def _init_ai_holdings_from_user():
             action='buy',
             shares=int(shares),
             price=price,
-            trade_date=today,
+            trade_date=yesterday,
             reason='初始化：与用户持仓同步',
         )
         db_session.add(record)
