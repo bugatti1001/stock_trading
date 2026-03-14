@@ -627,13 +627,55 @@ def generate_ai_recommendations(scored_stocks: List[Dict]) -> str:
         return ''
 
 
+def _init_ai_holdings_from_user():
+    """
+    如果 AI 没有任何交易记录，用用户当前持仓初始化 AI 持仓。
+    只执行一次（首次调用时）。
+    """
+    from app.config.database import db_session
+    from app.models.ai_trade_record import AiTradeRecord
+    from app.services.portfolio_service import compute_holdings
+    from datetime import date as date_type
+
+    existing = db_session.query(AiTradeRecord).first()
+    if existing:
+        return  # 已有记录，不需要初始化
+
+    user_holdings = compute_holdings()
+    if not user_holdings:
+        return
+
+    today = date_type.today()
+    for h in user_holdings:
+        shares = h.get('net_shares', 0)
+        price = h.get('avg_cost', 0) or h.get('current_price', 0)
+        if shares <= 0 or price <= 0:
+            continue
+        record = AiTradeRecord(
+            symbol=h['symbol'],
+            action='buy',
+            shares=int(shares),
+            price=price,
+            trade_date=today,
+            reason='初始化：与用户持仓同步',
+        )
+        db_session.add(record)
+
+    db_session.commit()
+    logger.info(f"[AI Trades] 从用户持仓初始化 {len(user_holdings)} 条 AI 持仓记录")
+
+
 def compute_ai_holdings() -> Dict[str, Dict]:
     """
     从 ai_trade_records 聚合计算 AI 的累计持仓。
+    首次调用时自动从用户持仓初始化。
     返回 { "AAPL": {"shares": 50, "avg_cost": 150.5}, ... }
     """
     from app.config.database import db_session
     from app.models.ai_trade_record import AiTradeRecord
+
+    # 首次自动初始化
+    _init_ai_holdings_from_user()
 
     records = db_session.query(AiTradeRecord).order_by(AiTradeRecord.trade_date).all()
     holdings: Dict[str, Dict] = {}
