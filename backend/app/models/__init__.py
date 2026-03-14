@@ -6,6 +6,7 @@ from .trade_record import TradeRecord
 from .user_principle import UserPrinciple
 from .stock_news_analysis import StockNewsAnalysis
 from .user_setting import UserSetting
+from .ai_trade_record import AiTradeRecord
 
 __all__ = [
     'Stock',
@@ -17,4 +18,5 @@ __all__ = [
     'UserPrinciple',
     'StockNewsAnalysis',
     'UserSetting',
+    'AiTradeRecord',
 ]

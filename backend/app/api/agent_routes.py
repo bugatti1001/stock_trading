@@ -184,6 +184,31 @@ def daily_scores_ai_trades():
         return error_response(str(e), 500)
 
 
+@bp.route('/api/agent/ai_holdings', methods=['GET'])
+def ai_holdings():
+    """获取 AI 模拟持仓"""
+    try:
+        from app.services.stock_scorer import compute_ai_holdings
+        from app.config.database import db_session
+        from app.models.stock import Stock
+        holdings = compute_ai_holdings()
+        # 附加当前价格和市值
+        result = {}
+        for symbol, h in holdings.items():
+            stock = db_session.query(Stock).filter_by(symbol=symbol).first()
+            price = stock.current_price if stock else 0
+            result[symbol] = {
+                'shares': h['shares'],
+                'avg_cost': h['avg_cost'],
+                'current_price': price,
+                'market_value': round(h['shares'] * price, 2) if price else 0,
+            }
+        return success_response(holdings=result)
+    except Exception as e:
+        logger.error(f"ai_holdings 错误: {e}")
+        return error_response(str(e), 500)
+
+
 @bp.route('/api/agent/scorer_weights', methods=['GET'])
 def get_scorer_weights():
     """获取当前评分权重"""

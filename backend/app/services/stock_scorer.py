@@ -627,22 +627,66 @@ def generate_ai_recommendations(scored_stocks: List[Dict]) -> str:
         return ''
 
 
+def compute_ai_holdings() -> Dict[str, Dict]:
+    """
+    从 ai_trade_records 聚合计算 AI 的累计持仓。
+    返回 { "AAPL": {"shares": 50, "avg_cost": 150.5}, ... }
+    """
+    from app.config.database import db_session
+    from app.models.ai_trade_record import AiTradeRecord
+
+    records = db_session.query(AiTradeRecord).order_by(AiTradeRecord.trade_date).all()
+    holdings: Dict[str, Dict] = {}
+
+    for r in records:
+        h = holdings.setdefault(r.symbol, {'shares': 0, 'total_cost': 0.0})
+        if r.action == 'buy':
+            h['total_cost'] += r.shares * r.price
+            h['shares'] += r.shares
+        elif r.action == 'sell':
+            if h['shares'] > 0:
+                avg = h['total_cost'] / h['shares']
+                sold = min(r.shares, h['shares'])
+                h['total_cost'] -= avg * sold
+                h['shares'] -= sold
+
+    # 只返回有持仓的
+    return {
+        sym: {'shares': h['shares'], 'avg_cost': round(h['total_cost'] / h['shares'], 4) if h['shares'] > 0 else 0}
+        for sym, h in holdings.items() if h['shares'] > 0
+    }
+
+
 def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     """
     AI 根据可用现金、投资原则和新闻，给出每只股票的具体买卖数量建议。
+    执行后将交易保存到 ai_trade_records 表。
     返回 { "AAPL": {"action": "buy", "shares": 10, "reason": "..."}, ... }
     """
     from app.config.settings import AI_TRADE_MAX_TOKENS
     from app.utils.ai_helpers import build_principles_summary
     from app.services.news_analysis_service import build_news_analysis_summary
+    from app.config.database import db_session
+    from app.models.user_setting import UserSetting
+    from app.models.ai_trade_record import AiTradeRecord
+    from datetime import date as date_type
 
     if not scored_stocks:
         return {}
 
-    # 获取可用现金
+    # 检查今天是否已执行过 AI 交易
+    today = date_type.today()
+    existing_today = db_session.query(AiTradeRecord).filter_by(trade_date=today).first()
+    if existing_today:
+        # 今天已有记录，直接返回今天的交易
+        today_records = db_session.query(AiTradeRecord).filter_by(trade_date=today).all()
+        return {
+            r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
+            for r in today_records
+        }
+
+    # 获取总资金
     try:
-        from app.config.database import db_session
-        from app.models.user_setting import UserSetting
         row = db_session.query(UserSetting).filter_by(key='total_capital').first()
         total_capital = float(row.value) if row else 0
     except Exception:
@@ -651,35 +695,59 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     if total_capital <= 0:
         return {}
 
-    # 计算持仓价值
-    portfolio_value = sum(
-        s['holding']['market_value']
-        for s in scored_stocks
-        if s.get('holding') and s['holding'].get('market_value')
+    # AI 当前持仓
+    ai_holdings = compute_ai_holdings()
+
+    # 计算 AI 持仓总价值和可用现金
+    # 用股票的当前价格来算
+    price_map = {}
+    for s in scored_stocks:
+        h = s.get('holding')
+        if h and h.get('current_price'):
+            price_map[s['symbol']] = h['current_price']
+        else:
+            # 从 stock 表获取
+            try:
+                from app.models.stock import Stock
+                stock = db_session.query(Stock).filter_by(symbol=s['symbol']).first()
+                if stock and stock.current_price:
+                    price_map[s['symbol']] = stock.current_price
+            except Exception:
+                pass
+
+    ai_portfolio_value = sum(
+        ai_holdings.get(sym, {}).get('shares', 0) * price_map.get(sym, 0)
+        for sym in ai_holdings
     )
-    available_cash = total_capital - portfolio_value
-    if available_cash < 0:
-        available_cash = 0
+    ai_available_cash = total_capital - ai_portfolio_value
+    if ai_available_cash < 0:
+        ai_available_cash = 0
 
     def _stock_line(s: Dict) -> str:
-        h = s.get('holding')
-        price = h.get('current_price', 0) if h else 0
-        shares = h.get('net_shares', 0) if h else 0
-        pnl = f", 盈亏{h.get('unrealized_pnl_pct', 0):.1f}%" if h else ''
-        return f"{s['symbol']}({s.get('stock_name','')}): 评分{s['total_score']}, 现价${price}, 持仓{shares}股{pnl}"
+        price = price_map.get(s['symbol'], 0)
+        ai_h = ai_holdings.get(s['symbol'], {})
+        ai_shares = ai_h.get('shares', 0)
+        ai_cost = ai_h.get('avg_cost', 0)
+        ai_pnl = ''
+        if ai_shares > 0 and ai_cost > 0 and price > 0:
+            pnl_pct = (price - ai_cost) / ai_cost * 100
+            ai_pnl = f", AI持仓{ai_shares}股(成本${ai_cost:.2f}, 盈亏{pnl_pct:+.1f}%)"
+        elif ai_shares > 0:
+            ai_pnl = f", AI持仓{ai_shares}股"
+        return f"{s['symbol']}({s.get('stock_name','')}): 评分{s['total_score']}, 现价${price}{ai_pnl}"
 
     stocks_text = '\n'.join(_stock_line(s) for s in scored_stocks)
     principles = build_principles_summary()
     news = build_news_analysis_summary()
 
-    prompt = f"""你是一名专业基金经理。根据以下信息，决定今天对每只股票的具体操作。
+    prompt = f"""你是一名专业基金经理，管理一个模拟投资组合。根据以下信息，决定今天对每只股票的具体操作。
 
-【账户信息】
+【AI 模拟账户信息】
 总资金: ${total_capital:,.0f}
-总持仓价值: ${portfolio_value:,.0f}
-可用现金: ${available_cash:,.0f}
+AI持仓总价值: ${ai_portfolio_value:,.0f}
+AI可用现金: ${ai_available_cash:,.0f}
 
-【股票池评分】
+【股票池评分及AI当前持仓】
 {stocks_text}
 
 【用户投资原则】
@@ -690,8 +758,8 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
 
 要求：
 1. 基于投资原则和新闻分析（而非维度权重）做出独立判断
-2. 买入时考虑可用现金限制，不能超买
-3. 卖出时考虑当前持仓数量，不能超卖
+2. 买入时考虑AI可用现金限制，不能超买
+3. 卖出时考虑AI当前持仓数量，不能超卖（没有持仓不能卖）
 4. 没有操作的股票不需要包含
 5. shares 为正整数
 
@@ -706,9 +774,33 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
         )
         from app.utils.ai_helpers import parse_ai_json_response
         result = parse_ai_json_response(raw)
-        if isinstance(result, dict):
-            return result.get('trades', result)
-        return {}
+        if not isinstance(result, dict):
+            return {}
+        trades = result.get('trades', result)
+
+        # 保存 AI 交易记录到数据库
+        for symbol, trade in trades.items():
+            action = trade.get('action', '')
+            shares = int(trade.get('shares', 0))
+            if action not in ('buy', 'sell') or shares <= 0:
+                continue
+            price = price_map.get(symbol, 0)
+            if price <= 0:
+                continue
+            record = AiTradeRecord(
+                symbol=symbol,
+                action=action,
+                shares=shares,
+                price=price,
+                trade_date=today,
+                reason=trade.get('reason', ''),
+            )
+            db_session.add(record)
+        db_session.commit()
+        logger.info(f"[AI Trades] 保存 {len(trades)} 条 AI 交易记录")
+
+        return trades
     except Exception as e:
+        db_session.rollback()
         logger.error(f"generate_ai_trades 失败: {e}")
         return {}
