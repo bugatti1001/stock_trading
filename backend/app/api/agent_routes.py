@@ -171,6 +171,19 @@ def daily_scores_ai_reasoning():
         return error_response(str(e), 500)
 
 
+@bp.route('/api/agent/daily_scores/ai_trades', methods=['POST'])
+def daily_scores_ai_trades():
+    """AI 根据可用现金、投资原则和新闻给出具体买卖数量建议"""
+    try:
+        from app.services.stock_scorer import score_all_stocks, generate_ai_trades
+        scores = score_all_stocks()
+        trades = generate_ai_trades(scores)
+        return success_response(trades=trades)
+    except Exception as e:
+        logger.error(f"daily_scores_ai_trades 错误: {e}")
+        return error_response(str(e), 500)
+
+
 @bp.route('/api/agent/scorer_weights', methods=['GET'])
 def get_scorer_weights():
     """获取当前评分权重"""

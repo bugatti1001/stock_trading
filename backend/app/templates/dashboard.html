@@ -210,6 +210,8 @@
                             <th>维度 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
                                 title="5 个评分维度（悬停色条查看详情）:&#10;&#10;估值 — PE/PB/PS/股息率，越低越好&#10;盈利 — 连续盈利/利润率/现金流质量&#10;健康 — 净现金/负债率/流动性&#10;护城 — 毛利率水平与趋势/市场份额&#10;新闻 — 当日AI新闻情绪分析"></i></th>
                             <th>建议</th>
+                            <th>AI交易 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
+                                title="AI 根据可用现金、投资原则和新闻&#10;给出的具体买卖数量建议&#10;（需先在交易日记设置总资金）"></i></th>
                         </tr>
                     </thead>
                     <tbody id="scoreTableBody"></tbody>
@@ -321,6 +323,11 @@ function initScores() {
     try {
         const cached = JSON.parse(localStorage.getItem(SCORE_CACHE_KEY));
         if (cached && cached.date === getTodayStr() && cached.scores) {
+            // 恢复 AI 交易缓存
+            try {
+                const tc = JSON.parse(localStorage.getItem('dashboard_ai_trades'));
+                if (tc && tc.date === getTodayStr()) window._aiTrades = tc.trades || {};
+            } catch(e2) {}
             renderScoreTable(cached.scores);
         }
     } catch(e) {}
@@ -346,6 +353,8 @@ async function loadDailyScores() {
                 date: getTodayStr(),
                 scores: data.scores
             }));
+            // 异步加载 AI 交易建议
+            loadAiTrades(data.scores);
         } else {
             document.getElementById('scoreErrorMsg').textContent = data.error || '评分失败';
             document.getElementById('scoreError').style.display = 'block';
@@ -358,12 +367,27 @@ async function loadDailyScores() {
     }
 }
 
+async function loadAiTrades(scores) {
+    try {
+        const res = await fetch('/api/agent/daily_scores/ai_trades', { method: 'POST' });
+        const data = await res.json();
+        if (data.success && data.trades) {
+            window._aiTrades = data.trades;
+            localStorage.setItem('dashboard_ai_trades', JSON.stringify({
+                date: getTodayStr(), trades: data.trades
+            }));
+            // 重新渲染表格以显示 AI 交易列
+            renderScoreTable(scores);
+        }
+    } catch (e) { console.error('loadAiTrades error:', e); }
+}
+
 function renderScoreTable(scores) {
     const tbody = document.getElementById('scoreTableBody');
     tbody.innerHTML = '';
 
     if (!scores || scores.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">股票池暂无数据</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">股票池暂无数据</td></tr>';
         document.getElementById('scoreTable').style.display = 'table';
         return;
     }
@@ -401,6 +425,18 @@ function renderScoreTable(scores) {
         dimKeys.forEach(dk => { dimBars += `<span>${dimShort[dk]}</span>`; });
         dimBars += '</div>';
 
+        // AI 交易建议列
+        const aiTrade = (window._aiTrades || {})[s.symbol];
+        let aiTradeCell = '<span class="text-muted">-</span>';
+        if (aiTrade) {
+            const isBuy = aiTrade.action === 'buy';
+            const color = isBuy ? 'success' : 'danger';
+            const icon = isBuy ? 'cart-plus' : 'cart-dash';
+            const label = isBuy ? '买入' : '卖出';
+            aiTradeCell = `<span class="badge bg-${color}" style="cursor:help" title="${aiTrade.reason || ''}">
+                <i class="bi bi-${icon}"></i> ${label} ${aiTrade.shares}股</span>`;
+        }
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td><a href="/stocks/${s.symbol}" class="fw-bold text-decoration-none">${s.symbol}</a>
@@ -410,6 +446,7 @@ function renderScoreTable(scores) {
             <td><span class="score-badge ${scoreClass(s.total_score)}">${s.total_score}</span></td>
             <td>${dimBars}</td>
             <td><span class="action-badge ${actionClass(s.action)}">${s.action_emoji} ${s.action_label}</span></td>
+            <td>${aiTradeCell}</td>
         `;
         tbody.appendChild(tr);
     });

@@ -267,6 +267,43 @@ def portfolio() -> tuple:
         return error_response(str(e), status_code=500)
 
 
+@bp.route('/api/trades/total_capital', methods=['GET'])
+def get_total_capital() -> tuple:
+    """获取用户设定的总资金"""
+    try:
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='total_capital').first()
+        value = float(row.value) if row else 0
+        return success_response(total_capital=value)
+    except Exception as e:
+        logger.error(f"get_total_capital 错误: {e}")
+        return error_response(str(e), status_code=500)
+
+
+@bp.route('/api/trades/total_capital', methods=['PUT'])
+def set_total_capital() -> tuple:
+    """设置用户总资金"""
+    try:
+        data = request.get_json()
+        if not data or 'total_capital' not in data:
+            return error_response('缺少 total_capital 字段')
+        val = float(data['total_capital'])
+        if val < 0:
+            return error_response('总资金不能为负数')
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='total_capital').first()
+        if row:
+            row.value = str(val)
+        else:
+            db_session.add(UserSetting(key='total_capital', value=str(val)))
+        db_session.commit()
+        return success_response(total_capital=val)
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"set_total_capital 错误: {e}")
+        return error_response(str(e), status_code=500)
+
+
 @bp.route('/api/trades/import_csv', methods=['POST'])
 def import_csv() -> tuple:
     """

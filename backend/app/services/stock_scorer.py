@@ -625,3 +625,90 @@ def generate_ai_recommendations(scored_stocks: List[Dict]) -> str:
     except Exception as e:
         logger.error(f"generate_ai_recommendations 失败: {e}")
         return ''
+
+
+def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
+    """
+    AI 根据可用现金、投资原则和新闻，给出每只股票的具体买卖数量建议。
+    返回 { "AAPL": {"action": "buy", "shares": 10, "reason": "..."}, ... }
+    """
+    from app.config.settings import AI_TRADE_MAX_TOKENS
+    from app.utils.ai_helpers import build_principles_summary
+    from app.services.news_analysis_service import build_news_analysis_summary
+
+    if not scored_stocks:
+        return {}
+
+    # 获取可用现金
+    try:
+        from app.config.database import db_session
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='total_capital').first()
+        total_capital = float(row.value) if row else 0
+    except Exception:
+        total_capital = 0
+
+    if total_capital <= 0:
+        return {}
+
+    # 计算持仓价值
+    portfolio_value = sum(
+        s['holding']['market_value']
+        for s in scored_stocks
+        if s.get('holding') and s['holding'].get('market_value')
+    )
+    available_cash = total_capital - portfolio_value
+    if available_cash < 0:
+        available_cash = 0
+
+    def _stock_line(s: Dict) -> str:
+        h = s.get('holding')
+        price = h.get('current_price', 0) if h else 0
+        shares = h.get('net_shares', 0) if h else 0
+        pnl = f", 盈亏{h.get('unrealized_pnl_pct', 0):.1f}%" if h else ''
+        return f"{s['symbol']}({s.get('stock_name','')}): 评分{s['total_score']}, 现价${price}, 持仓{shares}股{pnl}"
+
+    stocks_text = '\n'.join(_stock_line(s) for s in scored_stocks)
+    principles = build_principles_summary()
+    news = build_news_analysis_summary()
+
+    prompt = f"""你是一名专业基金经理。根据以下信息，决定今天对每只股票的具体操作。
+
+【账户信息】
+总资金: ${total_capital:,.0f}
+总持仓价值: ${portfolio_value:,.0f}
+可用现金: ${available_cash:,.0f}
+
+【股票池评分】
+{stocks_text}
+
+【用户投资原则】
+{principles}
+
+【近期新闻分析】
+{news}
+
+要求：
+1. 基于投资原则和新闻分析（而非维度权重）做出独立判断
+2. 买入时考虑可用现金限制，不能超买
+3. 卖出时考虑当前持仓数量，不能超卖
+4. 没有操作的股票不需要包含
+5. shares 为正整数
+
+只返回 JSON，格式：
+{{"trades": {{"AAPL": {{"action": "buy", "shares": 10, "reason": "估值合理，近期利好"}}, "TSLA": {{"action": "sell", "shares": 5, "reason": "估值偏高，获利了结"}}}}}}"""
+
+    try:
+        from app.services.ai_client import create_message
+        raw = create_message(
+            messages=[{'role': 'user', 'content': prompt}],
+            max_tokens=AI_TRADE_MAX_TOKENS,
+        )
+        from app.utils.ai_helpers import parse_ai_json_response
+        result = parse_ai_json_response(raw)
+        if isinstance(result, dict):
+            return result.get('trades', result)
+        return {}
+    except Exception as e:
+        logger.error(f"generate_ai_trades 失败: {e}")
+        return {}
