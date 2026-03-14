@@ -139,8 +139,11 @@
 
 <!-- AI 模拟账户统计 -->
 <div class="row g-3 mb-4">
-    <div class="col-12">
+    <div class="col-12 d-flex align-items-center gap-2">
         <small class="text-muted"><i class="bi bi-robot me-1"></i>AI 模拟账户</small>
+        <button class="btn btn-outline-primary btn-sm" onclick="resetAiAccount()" title="清空AI交易记录，用用户当前持仓重新初始化">
+            <i class="bi bi-arrow-repeat me-1"></i>重置AI账户
+        </button>
     </div>
     <div class="col-6 col-lg">
         <div class="card stat-card h-100" style="border-left: 4px solid #8b5cf6;">
@@ -554,6 +557,21 @@ async function loadStats() {
     } catch (e) {
         console.error(e);
     }
+}
+
+// ── Reset AI Account ──────────────────────────────────────────
+async function resetAiAccount() {
+    if (!confirm('确定重置 AI 模拟账户？\n将清空所有 AI 交易记录，用你当前的持仓重新初始化。')) return;
+    try {
+        const res = await fetch('/api/agent/ai_holdings/reset', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            alert(data.message || 'AI 账户已重置');
+            loadStats();
+        } else {
+            alert(data.error || '重置失败');
+        }
+    } catch (e) { alert('网络错误'); }
 }
 
 // ── Total Capital Edit ─────────────────────────────────────────

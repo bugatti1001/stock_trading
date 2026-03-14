@@ -209,6 +209,46 @@ def ai_holdings():
         return error_response(str(e), 500)
 
 
+@bp.route('/api/agent/ai_holdings/reset', methods=['POST'])
+def reset_ai_holdings():
+    """重置 AI 模拟账户：清空交易记录，用用户当前持仓重新初始化"""
+    try:
+        from app.config.database import db_session
+        from app.models.ai_trade_record import AiTradeRecord
+        from app.services.portfolio_service import compute_holdings
+        from datetime import date, timedelta
+
+        # 清空所有 AI 交易记录
+        db_session.query(AiTradeRecord).delete()
+        db_session.commit()
+
+        # 用用户当前持仓重新初始化（昨天日期）
+        yesterday = date.today() - timedelta(days=1)
+        user_holdings = compute_holdings()
+        count = 0
+        for h in user_holdings:
+            shares = h.get('net_shares', 0)
+            price = h.get('avg_cost', 0) or h.get('current_price', 0)
+            if shares <= 0 or price <= 0:
+                continue
+            record = AiTradeRecord(
+                symbol=h['symbol'],
+                action='buy',
+                shares=int(shares),
+                price=price,
+                trade_date=yesterday,
+                reason='重置：与用户持仓同步',
+            )
+            db_session.add(record)
+            count += 1
+        db_session.commit()
+        return success_response(message=f'AI 账户已重置，同步 {count} 只持仓')
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"reset_ai_holdings 错误: {e}")
+        return error_response(str(e), 500)
+
+
 @bp.route('/api/agent/scorer_weights', methods=['GET'])
 def get_scorer_weights():
     """获取当前评分权重"""
