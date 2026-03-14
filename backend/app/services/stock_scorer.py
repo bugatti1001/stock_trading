@@ -655,7 +655,7 @@ def _init_ai_holdings_from_user():
         record = AiTradeRecord(
             symbol=h['symbol'],
             action='buy',
-            shares=int(shares),
+            shares=shares,
             price=price,
             trade_date=yesterday,
             reason='初始化：与用户持仓同步',

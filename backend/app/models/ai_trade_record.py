@@ -8,7 +8,7 @@ class AiTradeRecord(BaseModel):
 
     symbol = Column(String(20), nullable=False, index=True)
     action = Column(String(10), nullable=False)  # 'buy' | 'sell'
-    shares = Column(Integer, nullable=False)
+    shares = Column(Float, nullable=False)
     price = Column(Float, nullable=False)  # 执行时的股价
     trade_date = Column(Date, nullable=False)
     reason = Column(Text, nullable=True)
