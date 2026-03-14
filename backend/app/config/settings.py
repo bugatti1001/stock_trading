@@ -55,6 +55,30 @@ def get_anthropic_key() -> str:
 def get_openai_key() -> str:
     return os.getenv('OPENAI_API_KEY', '')
 
+def get_minimax_key() -> str:
+    """从当前用户的数据库读取 MiniMax API Key"""
+    try:
+        from app.config.database import db_session
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='minimax_api_key').first()
+        return row.value if row else ''
+    except Exception:
+        return ''
+
+def get_ai_provider() -> str:
+    """获取当前用户选择的 AI 提供商: 'claude' 或 'minimax'"""
+    try:
+        from app.config.database import db_session
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='ai_provider').first()
+        return row.value if row and row.value in ('claude', 'minimax') else 'claude'
+    except Exception:
+        return 'claude'
+
+# MiniMax Configuration
+MINIMAX_BASE_URL = 'https://api.minimaxi.chat/v1'
+MINIMAX_DEFAULT_MODEL = 'MiniMax-Text-01'
+
 # Supported AI models
 OPENAI_MODELS = {'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'}
 ANTHROPIC_MODELS = {
@@ -62,6 +86,7 @@ ANTHROPIC_MODELS = {
     'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022',
     'claude-3-opus-20240229'
 }
+MINIMAX_MODELS = {'MiniMax-Text-01'}
 
 # Valid principle categories
 VALID_CATEGORIES = {'risk', 'valuation', 'selection', 'behavior'}

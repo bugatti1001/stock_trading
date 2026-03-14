@@ -11,7 +11,7 @@ from datetime import date
 from typing import Dict, Any, List
 
 from app.config.database import db_session
-from app.config.settings import get_anthropic_key, AI_MODEL
+
 from app.models.stock import Stock
 from app.models.financial_data import FinancialData, ReportPeriod
 from app.services.ai_extractor import (
@@ -197,12 +197,6 @@ def run_ai_backfill(symbol: str) -> Dict[str, Any]:
     """
     Run AI-powered backfill: fetch financial pages, extract with single Claude call.
     """
-    import anthropic
-
-    api_key = get_anthropic_key()
-    if not api_key:
-        raise ValueError("未配置 Claude API Key，请在登录时输入")
-
     stock = db_session.query(Stock).filter_by(symbol=symbol.upper()).first()
     if not stock:
         raise ValueError(f"股票 {symbol} 不存在")
@@ -255,17 +249,16 @@ def run_ai_backfill(symbol: str) -> Dict[str, Any]:
             'target_years': [str(y) for y in target_years], 'currency': currency_map,
         }
 
-    # Step 3: Single Claude call (5-15 seconds)
-    logger.info(f"[AI Backfill] {symbol}: calling Claude for extraction ({len(prompt)} chars prompt)")
-    client = anthropic.Anthropic(api_key=api_key)
+    # Step 3: Single AI call (5-15 seconds)
+    logger.info(f"[AI Backfill] {symbol}: calling AI for extraction ({len(prompt)} chars prompt)")
+    from app.services.ai_client import create_message
 
     for attempt in range(3):
         try:
-            response = client.messages.create(
-                model=AI_MODEL,
+            final_text = create_message(
+                messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
                 temperature=0,
-                messages=[{"role": "user", "content": prompt}],
             )
             break
         except Exception as e:
@@ -276,11 +269,9 @@ def run_ai_backfill(symbol: str) -> Dict[str, Any]:
             else:
                 raise
     else:
-        raise RuntimeError("Claude API 调用失败")
+        raise RuntimeError("AI API 调用失败")
 
-    final_text = response.content[0].text
-    logger.info(f"[AI Backfill] {symbol}: got {len(final_text)} chars response, "
-                f"in/out={response.usage.input_tokens}/{response.usage.output_tokens}")
+    logger.info(f"[AI Backfill] {symbol}: got {len(final_text)} chars response")
 
     # Step 4: Parse JSON
     ai_result = parse_ai_json_response(final_text)

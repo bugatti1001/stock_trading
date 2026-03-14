@@ -17,7 +17,7 @@ from sqlalchemy import desc
 from app.config.database import db_session
 from app.models.user_principle import UserPrinciple
 from app.utils.response import success_response, error_response
-from app.config.settings import AI_MODEL, VALID_CATEGORIES, get_anthropic_key
+from app.config.settings import VALID_CATEGORIES
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('principles', __name__)
@@ -228,10 +228,6 @@ def deduplicate_principles() -> tuple:
             )
 
         # ======== step 1: AI 分析，返回预览 ========
-        api_key = get_anthropic_key()
-        if not api_key:
-            return error_response('未配置 ANTHROPIC_API_KEY', 500)
-
         principles = db_session.query(UserPrinciple).order_by(UserPrinciple.created_at).all()
         if len(principles) <= 1:
             return success_response(
@@ -269,14 +265,11 @@ def deduplicate_principles() -> tuple:
 如果某条原则无需合并，不要出现在 groups 里。
 只返回 JSON，不要任何解释文字。"""
 
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=AI_MODEL,
+        from app.services.ai_client import create_message
+        raw = create_message(
+            messages=[{'role': 'user', 'content': prompt}],
             max_tokens=2048,
-            messages=[{'role': 'user', 'content': prompt}]
         )
-        raw = msg.content[0].text.strip()
 
         from app.utils.ai_helpers import parse_ai_json_response
         result = parse_ai_json_response(raw)

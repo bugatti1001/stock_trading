@@ -67,14 +67,23 @@
                                placeholder="请输入密码" required>
                     </div>
                 </div>
-                <div class="mb-4">
+                <div class="mb-3">
                     <label for="api_key" class="form-label">Claude API Key</label>
                     <div class="input-group">
                         <span class="input-group-text"><i class="bi bi-key"></i></span>
                         <input type="password" class="form-control" id="api_key" name="api_key"
-                               placeholder="sk-ant-..." required>
+                               placeholder="sk-ant-...">
                     </div>
                 </div>
+                <div class="mb-3">
+                    <label for="minimax_api_key" class="form-label">MiniMax API Key</label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-key"></i></span>
+                        <input type="password" class="form-control" id="minimax_api_key" name="minimax_api_key"
+                               placeholder="eyJ...">
+                    </div>
+                </div>
+                <p class="text-muted small mb-3">至少填写一个 API Key；如已保存过可留空</p>
                 <button type="submit" class="btn btn-primary w-100">
                     <i class="bi bi-box-arrow-in-right"></i> 登录
                 </button>

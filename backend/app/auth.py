@@ -74,8 +74,14 @@ def login():
 
             # 将 API Key 持久化到用户的 SQLite 数据库
             api_key = request.form.get('api_key', '').strip()
+            minimax_key = request.form.get('minimax_api_key', '').strip()
             if api_key:
-                _save_api_key(username, api_key)
+                _save_setting(username, 'anthropic_api_key', api_key)
+            if minimax_key:
+                _save_setting(username, 'minimax_api_key', minimax_key)
+            # 自动设置默认 AI 提供商
+            if minimax_key and not api_key:
+                _save_setting(username, 'ai_provider', 'minimax')
 
             logger.info(f"用户 {username} 登录成功")
             return redirect(next_url)
@@ -92,20 +98,24 @@ def logout():
     return redirect(url_for('auth.login'))
 
 
-def _save_api_key(username: str, api_key: str):
-    """将 API Key 持久化到用户的 SQLite 数据库"""
+def _save_setting(username: str, key: str, value: str):
+    """将设置持久化到用户的 SQLite 数据库"""
     try:
         from app.config.database import create_user_session
         from app.models.user_setting import UserSetting
         s = create_user_session(username)
         try:
-            row = s.query(UserSetting).filter_by(key='anthropic_api_key').first()
+            row = s.query(UserSetting).filter_by(key=key).first()
             if row:
-                row.value = api_key
+                row.value = value
             else:
-                s.add(UserSetting(key='anthropic_api_key', value=api_key))
+                s.add(UserSetting(key=key, value=value))
             s.commit()
         finally:
             s.close()
     except Exception as e:
-        logger.warning(f"保存 API Key 失败 [{username}]: {e}")
+        logger.warning(f"保存设置失败 [{username}/{key}]: {e}")
+
+
+# 向后兼容
+_save_api_key = lambda username, api_key: _save_setting(username, 'anthropic_api_key', api_key)

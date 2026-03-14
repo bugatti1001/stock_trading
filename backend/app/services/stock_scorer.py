@@ -571,12 +571,8 @@ def generate_ai_recommendations(scored_stocks: List[Dict]) -> str:
 
     只取评分最高的 4 只和最低的 4 只，请求 AI 给出简要理由
     """
-    from app.config.settings import AI_MODEL, AI_TRADE_MAX_TOKENS, get_anthropic_key
+    from app.config.settings import AI_TRADE_MAX_TOKENS
     from app.utils.ai_helpers import build_principles_summary
-
-    api_key = get_anthropic_key()
-    if not api_key:
-        return ''
 
     if not scored_stocks:
         return ''
@@ -621,16 +617,11 @@ def generate_ai_recommendations(scored_stocks: List[Dict]) -> str:
 {{"stock_reasons": {{"AAPL": "估值合理，现金流充裕", ...}}, "portfolio_summary": "一句话总结"}}"""
 
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=AI_MODEL,
-            max_tokens=AI_TRADE_MAX_TOKENS,
+        from app.services.ai_client import create_message
+        return create_message(
             messages=[{'role': 'user', 'content': prompt}],
+            max_tokens=AI_TRADE_MAX_TOKENS,
         )
-        raw = msg.content[0].text.strip()
-        from app.utils.ai_helpers import parse_ai_json_response
-        return raw  # 返回原始文本，前端或调用方解析
     except Exception as e:
         logger.error(f"generate_ai_recommendations 失败: {e}")
         return ''

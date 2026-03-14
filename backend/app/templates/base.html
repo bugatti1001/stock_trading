@@ -68,7 +68,28 @@
                         </a>
                     </li>
                 </ul>
-                <ul class="navbar-nav">
+                <ul class="navbar-nav align-items-center">
+                    <!-- AI Provider Switcher -->
+                    <li class="nav-item dropdown me-2">
+                        <a class="nav-link dropdown-toggle text-light" href="#" id="aiProviderDropdown"
+                           role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-cpu"></i>
+                            <span id="currentProviderLabel">AI</span>
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="aiProviderDropdown" id="aiProviderMenu">
+                            <li><h6 class="dropdown-header">选择 AI 模型</h6></li>
+                            <li>
+                                <a class="dropdown-item" href="#" data-provider="claude">
+                                    <i class="bi bi-check2 me-1 provider-check" style="visibility:hidden"></i>Claude
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" href="#" data-provider="minimax">
+                                    <i class="bi bi-check2 me-1 provider-check" style="visibility:hidden"></i>MiniMax
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/api/docs" target="_blank">
                             <i class="bi bi-code-square"></i> API文档
@@ -133,6 +154,52 @@
         }
         return md || '';
     }
+    </script>
+
+    <!-- AI Provider Switcher JS -->
+    <script>
+    (function() {
+        const label = document.getElementById('currentProviderLabel');
+        const menu = document.getElementById('aiProviderMenu');
+        if (!label || !menu) return;
+
+        function updateUI(provider, available) {
+            const names = { claude: 'Claude', minimax: 'MiniMax' };
+            label.textContent = names[provider] || 'AI';
+            menu.querySelectorAll('[data-provider]').forEach(function(el) {
+                const p = el.getAttribute('data-provider');
+                const check = el.querySelector('.provider-check');
+                if (check) check.style.visibility = (p === provider) ? 'visible' : 'hidden';
+                if (available && !available.includes(p)) {
+                    el.classList.add('disabled', 'text-muted');
+                    el.title = '未配置 API Key';
+                } else {
+                    el.classList.remove('disabled', 'text-muted');
+                    el.title = '';
+                }
+            });
+        }
+
+        fetch('/api/agent/ai_provider')
+            .then(function(r) { return r.json(); })
+            .then(function(d) { if (d.success) updateUI(d.provider, d.available); })
+            .catch(function() {});
+
+        menu.addEventListener('click', function(e) {
+            var item = e.target.closest('[data-provider]');
+            if (!item || item.classList.contains('disabled')) return;
+            e.preventDefault();
+            var provider = item.getAttribute('data-provider');
+            fetch('/api/agent/ai_provider', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider: provider })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) { if (d.success) updateUI(d.provider); })
+            .catch(function() {});
+        });
+    })();
     </script>
 
     <!-- Custom JS -->

@@ -61,17 +61,18 @@ def _get_existing_today_symbols() -> set:
 def _analyze_single_stock(symbol: str, stock_name: str,
                           news_items: List[Dict],
                           principles_text: str,
-                          api_key: str = '') -> Dict:
+                          api_key: str = '',
+                          provider: str = 'claude') -> Dict:
     """
-    调用 Claude 分析单只股票的新闻（线程安全，不使用 db_session）
-    api_key 必须由调用方（主线程）传入，子线程中无法访问 Flask session。
+    调用 AI 分析单只股票的新闻（线程安全，不使用 db_session）
+    api_key 和 provider 必须由调用方（主线程）传入，子线程中无法访问 Flask session。
 
     Returns:
         dict: {'success': True, 'data': {...parsed result...}} on success,
               {'success': False, 'error': '...'} on failure.
     """
     if not api_key:
-        logger.error("ANTHROPIC_API_KEY not provided to _analyze_single_stock")
+        logger.error("API Key not provided to _analyze_single_stock")
         return {'success': False, 'error': '未配置 API Key'}
 
     # 构建新闻文本
@@ -109,47 +110,41 @@ def _analyze_single_stock(symbol: str, stock_name: str,
   "principle_impacts": ["影响描述1", "影响描述2"]
 }}"""
 
-    import anthropic
-    import httpx
     import time as _time
+    from app.services.ai_client import create_message
 
     max_retries = 3
-    client = anthropic.Anthropic(
-        api_key=api_key,
-        timeout=httpx.Timeout(90.0, connect=15.0),
-    )
 
     for attempt in range(1, max_retries + 1):
         try:
-            msg = client.messages.create(
-                model=AI_MODEL,
+            raw: str = create_message(
+                messages=[{'role': 'user', 'content': prompt}],
                 max_tokens=2048,
-                messages=[{'role': 'user', 'content': prompt}]
+                provider=provider,
+                api_key=api_key,
             )
-            raw: str = msg.content[0].text.strip()
             parsed: Optional[Dict] = parse_ai_json_response(raw)
             if parsed:
                 logger.info(f"Analysis complete for {symbol}: {parsed.get('sentiment', '?')}")
                 return {'success': True, 'data': parsed}
             else:
                 return {'success': False, 'error': 'AI 返回内容无法解析'}
-        except anthropic.RateLimitError as e:
-            if attempt < max_retries:
-                wait_sec = 30 * attempt  # 30s, 60s, 90s
-                logger.warning(
-                    f"Rate limit hit for {symbol} (attempt {attempt}/{max_retries}), "
-                    f"waiting {wait_sec}s before retry..."
-                )
-                _time.sleep(wait_sec)
-            else:
-                logger.error(f"Rate limit exceeded for {symbol} after {max_retries} retries: {e}")
-                return {'success': False, 'error': f'API 速率限制，已重试 {max_retries} 次仍失败，请稍后再试'}
-        except anthropic.APIStatusError as e:
-            logger.error(f"API error for {symbol}: {e}")
-            return {'success': False, 'error': f'API 错误: {e.status_code}'}
         except Exception as e:
-            logger.error(f"News analysis failed for {symbol}: {e}", exc_info=True)
-            return {'success': False, 'error': str(e)}
+            err_name = type(e).__name__
+            if 'RateLimit' in err_name or '429' in str(e):
+                if attempt < max_retries:
+                    wait_sec = 30 * attempt
+                    logger.warning(
+                        f"Rate limit hit for {symbol} (attempt {attempt}/{max_retries}), "
+                        f"waiting {wait_sec}s before retry..."
+                    )
+                    _time.sleep(wait_sec)
+                else:
+                    logger.error(f"Rate limit exceeded for {symbol} after {max_retries} retries: {e}")
+                    return {'success': False, 'error': f'API 速率限制，已重试 {max_retries} 次仍失败，请稍后再试'}
+            else:
+                logger.error(f"News analysis failed for {symbol}: {e}", exc_info=True)
+                return {'success': False, 'error': str(e)}
 
     return {'success': False, 'error': '未知错误'}
 
@@ -168,9 +163,14 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
         - data: [DONE]
     """
     try:
-        api_key: str = get_anthropic_key()
+        from app.config.settings import get_ai_provider, get_minimax_key
+        provider: str = get_ai_provider()
+        if provider == 'minimax':
+            api_key: str = get_minimax_key()
+        else:
+            api_key: str = get_anthropic_key()
         if not api_key:
-            yield f"data: {json.dumps({'type': 'error', 'symbol': '', 'message': '未配置 ANTHROPIC_API_KEY，请在登录时输入', 'completed': 0, 'total': 0}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'symbol': '', 'message': '未配置 API Key，请在登录时输入', 'completed': 0, 'total': 0}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             return
 
@@ -223,7 +223,7 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
             for symbol, stock_name, news_items in tasks:
                 future = executor.submit(
                     _analyze_single_stock,
-                    symbol, stock_name, news_items, principles_text, api_key
+                    symbol, stock_name, news_items, principles_text, api_key, provider
                 )
                 future_to_symbol[future] = (symbol, stock_name, news_items)
 

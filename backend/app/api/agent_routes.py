@@ -200,3 +200,45 @@ def update_scorer_weights():
     except Exception as e:
         logger.error(f"update_scorer_weights 错误: {e}")
         return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/ai_provider', methods=['GET'])
+def get_ai_provider():
+    """获取当前 AI 提供商设置"""
+    try:
+        from app.config.settings import get_ai_provider, get_anthropic_key, get_minimax_key
+        provider = get_ai_provider()
+        has_claude = bool(get_anthropic_key())
+        has_minimax = bool(get_minimax_key())
+        available = []
+        if has_claude:
+            available.append('claude')
+        if has_minimax:
+            available.append('minimax')
+        return success_response(provider=provider, available=available)
+    except Exception as e:
+        logger.error(f"get_ai_provider 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/ai_provider', methods=['PUT'])
+def set_ai_provider():
+    """切换 AI 提供商"""
+    try:
+        data = request.get_json()
+        provider = data.get('provider', '').strip().lower()
+        if provider not in ('claude', 'minimax'):
+            return error_response('provider 必须是 claude 或 minimax')
+
+        from app.config.database import db_session
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='ai_provider').first()
+        if row:
+            row.value = provider
+        else:
+            db_session.add(UserSetting(key='ai_provider', value=provider))
+        db_session.commit()
+        return success_response(provider=provider)
+    except Exception as e:
+        logger.error(f"set_ai_provider 错误: {e}")
+        return error_response(str(e), 500)

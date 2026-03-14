@@ -9,7 +9,7 @@ import logging
 from typing import Any, Iterator, List, Dict, Optional, Union
 
 from app.config.database import db_session
-from app.config.settings import AI_MODEL, AI_MAX_TOKENS, AI_TRADE_MAX_TOKENS, get_anthropic_key
+from app.config.settings import AI_MAX_TOKENS, AI_TRADE_MAX_TOKENS
 from app.models.stock import Stock
 from app.models.conversation import Conversation, Message, ContextMode
 from app.models.user_principle import UserPrinciple
@@ -101,14 +101,8 @@ def chat_stream(conversation_id: int, user_message: str) -> Iterator[str]:
     流式对话，生成器返回 SSE 格式的文本块
     每次 yield 一个 data: ... 行
     """
-    api_key: str = get_anthropic_key()
-    if not api_key:
-        yield "data: [ERROR] 未配置 ANTHROPIC_API_KEY\n\n"
-        return
-
     try:
-        import anthropic
-        client: anthropic.Anthropic = anthropic.Anthropic(api_key=api_key)
+        from app.services.ai_client import stream_message
 
         conv: Optional[Conversation] = db_session.query(Conversation).get(conversation_id)
         if not conv:
@@ -137,19 +131,17 @@ def chat_stream(conversation_id: int, user_message: str) -> Iterator[str]:
             include_principles=bool(conv.include_principles),
         )
 
-        # 流式调用 Claude
+        # 流式调用 AI（自动选择 Claude 或 MiniMax）
         full_response: List[str] = []
-        with client.messages.stream(
-            model=AI_MODEL,
-            max_tokens=AI_MAX_TOKENS,
+        for text in stream_message(
             system=system_prompt,
             messages=history,
-        ) as stream:
-            for text in stream.text_stream:
-                full_response.append(text)
-                # SSE 格式：每个文本块作为一个事件
-                escaped: str = text.replace('\n', '\\n')
-                yield f"data: {escaped}\n\n"
+            max_tokens=AI_MAX_TOKENS,
+        ):
+            full_response.append(text)
+            # SSE 格式：每个文本块作为一个事件
+            escaped: str = text.replace('\n', '\\n')
+            yield f"data: {escaped}\n\n"
 
         # 保存 AI 回复
         assistant_content: str = ''.join(full_response)
@@ -242,10 +234,6 @@ def analyze_trade(trade_data: Dict[str, Any]) -> Dict[str, Any]:
     - 全量投资原则（build_principles_summary）
     - 全量新闻分析（build_news_analysis_summary）
     """
-    api_key: str = get_anthropic_key()
-    if not api_key:
-        return {'error': '未配置 ANTHROPIC_API_KEY'}
-
     action_cn: str = '买入' if trade_data.get('action') == 'buy' else '卖出'
     symbol: str = trade_data.get('symbol', '')
     price: Union[int, float] = trade_data.get('price', 0)
@@ -293,14 +281,11 @@ def analyze_trade(trade_data: Dict[str, Any]) -> Dict[str, Any]:
 }}"""
 
     try:
-        import anthropic
-        client: anthropic.Anthropic = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=AI_MODEL,
+        from app.services.ai_client import create_message
+        raw: str = create_message(
+            messages=[{'role': 'user', 'content': prompt}],
             max_tokens=AI_TRADE_MAX_TOKENS,
-            messages=[{'role': 'user', 'content': prompt}]
         )
-        raw: str = msg.content[0].text.strip()
         return parse_ai_json_response(raw)
     except json.JSONDecodeError as e:
         logger.error(f"analyze_trade JSON解析失败: {e}, 原始内容: {raw[:200] if 'raw' in locals() else 'N/A'}")
@@ -319,10 +304,6 @@ def extract_principles(conversation_id: int) -> Dict[str, Any]:
     从指定对话历史中提炼用户个人投资原则
     返回: { principles: [{ title, content, category }], error? }
     """
-    api_key: str = get_anthropic_key()
-    if not api_key:
-        return {'error': '未配置 ANTHROPIC_API_KEY'}
-
     conv: Optional[Conversation] = db_session.query(Conversation).get(conversation_id)
     if not conv:
         return {'error': '对话不存在'}
@@ -353,14 +334,11 @@ def extract_principles(conversation_id: int) -> Dict[str, Any]:
 [{{"title": "原则标题（10字以内）", "content": "具体描述（50字以内）", "category": "behavior"}}]"""
 
     try:
-        import anthropic
-        client: anthropic.Anthropic = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=AI_MODEL,
+        from app.services.ai_client import create_message
+        raw: str = create_message(
+            messages=[{'role': 'user', 'content': prompt}],
             max_tokens=AI_TRADE_MAX_TOKENS,
-            messages=[{'role': 'user', 'content': prompt}]
         )
-        raw: str = msg.content[0].text.strip()
         principles = parse_ai_json_response(raw)
         if not isinstance(principles, list):
             return {'error': 'AI 返回格式不是数组'}
@@ -380,10 +358,6 @@ def generate_dashboard_insight() -> str:
     基于：持仓股票数据 + 激活的 UserPrinciple
     返回 Markdown 格式字符串
     """
-    api_key: str = get_anthropic_key()
-    if not api_key:
-        return '⚠️ 未配置 ANTHROPIC_API_KEY，无法生成建议。'
-
     stocks_summary: str = build_stocks_summary()
     principles_summary: str = build_principles_summary()
 
@@ -422,14 +396,11 @@ def generate_dashboard_insight() -> str:
 - 如果有近期新闻数据，在建议中体现新闻信息的影响"""
 
     try:
-        import anthropic
-        client: anthropic.Anthropic = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model=AI_MODEL,
+        from app.services.ai_client import create_message
+        return create_message(
+            messages=[{'role': 'user', 'content': prompt}],
             max_tokens=AI_TRADE_MAX_TOKENS,
-            messages=[{'role': 'user', 'content': prompt}]
         )
-        return msg.content[0].text.strip()
     except Exception as e:
         logger.error(f"generate_dashboard_insight 失败: {e}", exc_info=True)
         return f'⚠️ AI 建议生成失败：{str(e)}'
