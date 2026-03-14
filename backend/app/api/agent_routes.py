@@ -249,6 +249,32 @@ def reset_ai_holdings():
         return error_response(str(e), 500)
 
 
+@bp.route('/api/agent/ai_trade_history', methods=['GET'])
+def ai_trade_history():
+    """获取 AI 交易历史记录"""
+    try:
+        from app.config.database import db_session
+        from app.models.ai_trade_record import AiTradeRecord
+        from sqlalchemy import desc
+        records = db_session.query(AiTradeRecord).filter(
+            ~AiTradeRecord.reason.like('%初始化%'),
+            ~AiTradeRecord.reason.like('%重置%'),
+        ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).all()
+        return success_response(trades=[{
+            'id': r.id,
+            'symbol': r.symbol,
+            'action': r.action,
+            'shares': r.shares,
+            'price': r.price,
+            'trade_date': r.trade_date.isoformat() if r.trade_date else None,
+            'reason': r.reason,
+            'amount': round(r.shares * r.price, 2),
+        } for r in records])
+    except Exception as e:
+        logger.error(f"ai_trade_history 错误: {e}")
+        return error_response(str(e), 500)
+
+
 @bp.route('/api/agent/scorer_weights', methods=['GET'])
 def get_scorer_weights():
     """获取当前评分权重"""

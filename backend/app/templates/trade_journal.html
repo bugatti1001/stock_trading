@@ -171,6 +171,35 @@
     </div>
 </div>
 
+<!-- AI 交易历史 -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-robot me-1"></i>AI 交易历史</span>
+        <button class="btn btn-outline-primary btn-sm" onclick="loadAiTradeHistory()">
+            <i class="bi bi-arrow-clockwise me-1"></i>刷新
+        </button>
+    </div>
+    <div class="card-body p-0">
+        <div class="text-center text-muted py-3" id="aiTradeEmpty">暂无 AI 交易记录</div>
+        <div class="table-responsive" id="aiTradeTableWrap" style="display:none; max-height:400px; overflow-y:auto;">
+            <table class="table table-hover table-sm mb-0">
+                <thead class="table-light sticky-top">
+                    <tr>
+                        <th>日期</th>
+                        <th>代码</th>
+                        <th>操作</th>
+                        <th>数量</th>
+                        <th>价格</th>
+                        <th>金额</th>
+                        <th>决策原因</th>
+                    </tr>
+                </thead>
+                <tbody id="aiTradeBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 <!-- 常见违规 Top5 -->
 <div class="card mb-4 d-none" id="violationCard">
     <div class="card-header"><i class="bi bi-exclamation-triangle me-1 text-warning"></i>常见违规 Top5</div>
@@ -559,6 +588,40 @@ async function loadStats() {
     }
 }
 
+// ── AI Trade History ──────────────────────────────────────────
+async function loadAiTradeHistory() {
+    try {
+        const res = await fetch('/api/agent/ai_trade_history');
+        const data = await res.json();
+        if (!data.success || !data.trades || data.trades.length === 0) {
+            document.getElementById('aiTradeEmpty').style.display = 'block';
+            document.getElementById('aiTradeTableWrap').style.display = 'none';
+            return;
+        }
+        document.getElementById('aiTradeEmpty').style.display = 'none';
+        document.getElementById('aiTradeTableWrap').style.display = 'block';
+        const tbody = document.getElementById('aiTradeBody');
+        tbody.innerHTML = data.trades.map(t => {
+            const isBuy = t.action === 'buy';
+            const actionBadge = isBuy
+                ? '<span class="badge bg-success">买入</span>'
+                : '<span class="badge bg-danger">卖出</span>';
+            return `<tr>
+                <td class="text-nowrap">${t.trade_date || ''}</td>
+                <td><strong>${t.symbol}</strong></td>
+                <td>${actionBadge}</td>
+                <td>${t.shares}</td>
+                <td>$${t.price?.toFixed(2) || '0'}</td>
+                <td>$${t.amount?.toLocaleString('en-US', {maximumFractionDigits: 0}) || '0'}</td>
+                <td><small>${t.reason || ''}</small></td>
+            </tr>`;
+        }).join('');
+    } catch (e) { console.error('loadAiTradeHistory error:', e); }
+}
+
+// 页面加载时自动加载 AI 交易历史
+loadAiTradeHistory();
+
 // ── Reset AI Account ──────────────────────────────────────────
 async function resetAiAccount() {
     if (!confirm('确定重置 AI 模拟账户？\n将清空所有 AI 交易记录，用你当前的持仓重新初始化。')) return;
@@ -568,6 +631,7 @@ async function resetAiAccount() {
         if (data.success) {
             alert(data.message || 'AI 账户已重置');
             loadStats();
+            loadAiTradeHistory();
         } else {
             alert(data.error || '重置失败');
         }

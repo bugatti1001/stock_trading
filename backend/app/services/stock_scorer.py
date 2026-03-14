@@ -702,12 +702,11 @@ def compute_ai_holdings() -> Dict[str, Dict]:
 
 def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     """
-    AI 根据可用现金、投资原则和新闻，给出每只股票的具体买卖数量建议。
+    AI 根据可用现金和新闻，给出每只股票的具体买卖数量建议。
     执行后将交易保存到 ai_trade_records 表。
     返回 { "AAPL": {"action": "buy", "shares": 10, "reason": "..."}, ... }
     """
     from app.config.settings import AI_TRADE_MAX_TOKENS
-    from app.utils.ai_helpers import build_principles_summary
     from app.services.news_analysis_service import build_news_analysis_summary
     from app.config.database import db_session
     from app.models.user_setting import UserSetting
@@ -717,12 +716,19 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     if not scored_stocks:
         return {}
 
-    # 检查今天是否已执行过 AI 交易
+    # 检查今天是否已执行过 AI 交易（排除初始化/重置记录）
     today = date_type.today()
-    existing_today = db_session.query(AiTradeRecord).filter_by(trade_date=today).first()
+    existing_today = db_session.query(AiTradeRecord).filter(
+        AiTradeRecord.trade_date == today,
+        ~AiTradeRecord.reason.like('%初始化%'),
+        ~AiTradeRecord.reason.like('%重置%'),
+    ).first()
     if existing_today:
-        # 今天已有记录，直接返回今天的交易
-        today_records = db_session.query(AiTradeRecord).filter_by(trade_date=today).all()
+        today_records = db_session.query(AiTradeRecord).filter(
+            AiTradeRecord.trade_date == today,
+            ~AiTradeRecord.reason.like('%初始化%'),
+            ~AiTradeRecord.reason.like('%重置%'),
+        ).all()
         return {
             r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
             for r in today_records
@@ -780,10 +786,9 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
         return f"{s['symbol']}({s.get('stock_name','')}): 评分{s['total_score']}, 现价${price}{ai_pnl}"
 
     stocks_text = '\n'.join(_stock_line(s) for s in scored_stocks)
-    principles = build_principles_summary()
     news = build_news_analysis_summary()
 
-    prompt = f"""你是一名专业基金经理，管理一个模拟投资组合。根据以下信息，决定今天对每只股票的具体操作。
+    prompt = f"""你是一名专业基金经理，管理一个模拟投资组合。根据股票基本面数据和近期新闻，决定今天对每只股票的具体操作。
 
 【AI 模拟账户信息】
 总资金: ${total_capital:,.0f}
@@ -793,21 +798,19 @@ AI可用现金: ${ai_available_cash:,.0f}
 【股票池评分及AI当前持仓】
 {stocks_text}
 
-【用户投资原则】
-{principles}
-
 【近期新闻分析】
 {news}
 
 要求：
-1. 基于投资原则和新闻分析（而非维度权重）做出独立判断
-2. 买入时考虑AI可用现金限制，不能超买
-3. 卖出时考虑AI当前持仓数量，不能超卖（没有持仓不能卖）
-4. 没有操作的股票不需要包含
-5. shares 为正整数
+1. 主要基于近期新闻和基本面数据做出交易决策
+2. 每个交易决策必须给出详细的 reason（30-50字），说明你的判断依据（引用具体新闻或数据）
+3. 买入时考虑AI可用现金限制，不能超买
+4. 卖出时考虑AI当前持仓数量，不能超卖（没有持仓不能卖）
+5. 没有操作的股票不需要包含
+6. shares 为正整数
 
 只返回 JSON，格式：
-{{"trades": {{"AAPL": {{"action": "buy", "shares": 10, "reason": "估值合理，近期利好"}}, "TSLA": {{"action": "sell", "shares": 5, "reason": "估值偏高，获利了结"}}}}}}"""
+{{"trades": {{"AAPL": {{"action": "buy", "shares": 10, "reason": "苹果发布AI新品，市场反应积极，估值仍在合理区间"}}, "TSLA": {{"action": "sell", "shares": 5, "reason": "特斯拉交付量低于预期，短期承压，获利了结"}}}}}}"""
 
     try:
         from app.services.ai_client import create_message
