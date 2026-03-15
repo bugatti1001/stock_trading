@@ -553,6 +553,19 @@ class XueqiuScraper:
                 'data_source': 'Xueqiu',
             }
 
+            # shares_outstanding 单位归一化：
+            # 雪球对部分股票返回"亿股"单位（值 < 10000），而其他字段都是实际值。
+            # 通过与 total_assets / revenue 的量级对比判断并修正。
+            shares = fin_dict.get('shares_outstanding')
+            if shares is not None and shares < 10000:
+                ref = fin_dict.get('total_assets') or fin_dict.get('revenue')
+                if ref and ref > 1e8:
+                    # ref 是实际值（如 55617933000），shares 却只有 20.55
+                    # 说明 shares 是"亿股"单位，需要 × 1e8
+                    fin_dict['shares_outstanding'] = shares * 1e8
+                    logger.debug(f"[雪球] {symbol} FY{fiscal_year} shares_outstanding "
+                                 f"归一化: {shares} 亿股 → {shares * 1e8:.0f}")
+
             # 过滤掉 None 值
             fin_dict = {k: v for k, v in fin_dict.items() if v is not None}
 

@@ -2,7 +2,7 @@
 
 bind = "0.0.0.0:8000"
 workers = 2  # SQLite doesn't handle high concurrency well
-timeout = 120  # AI requests may be slow
+timeout = 300  # AI backfill: web scraping (60s) + Claude API (120s) + retries
 keepalive = 5
 
 # Logging

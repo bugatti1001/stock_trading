@@ -21,6 +21,17 @@ from app.utils.ai_helpers import parse_ai_json_response
 
 logger = logging.getLogger(__name__)
 
+
+def _is_overload_or_timeout(error: Exception) -> bool:
+    """判断异常是否为超时、过载等可重试错误"""
+    type_name = type(error).__name__
+    if any(k in type_name for k in ('Timeout', 'APITimeoutError', 'OverloadedError',
+                                      'InternalServerError', 'APIConnectionError')):
+        return True
+    msg = str(error).lower()
+    return any(k in msg for k in ('timeout', 'overloaded', '529', '503', 'connection'))
+
+
 # ── Constants ──────────────────────────────────────────────────
 
 _METADATA_FIELDS = {'period_end_date', 'fiscal_year', 'period', 'report_name', 'currency'}
@@ -157,10 +168,10 @@ Extract missing annual financial data from the web page content below.
 - rd_expense: 研发费用
 - finance_cost: 财务费用/利息支出
 - cash_and_equivalents: 现金及等价物
-- accounts_receivable: 应收账款
+- accounts_receivable: 应收账款（仅贸易应收，不含合同资产/未开票应收）/ Accounts Receivable: use ONLY trade receivables (billed). EXCLUDE contract assets, unbilled receivables, and other receivables. This ensures accurate receivable turnover analysis
 - inventory: 存货
 - investments: 可变现金融资产（不含长期股权投资）/ Liquid financial investments: short-term investments + marketable securities + trading securities + available-for-sale securities. EXCLUDE long-term equity investments in subsidiaries/associates (strategic holdings)
-- accounts_payable: 应付账款
+- accounts_payable: 应付账款（仅 trade payables，不含 accrued liabilities）/ Accounts Payable: use ONLY trade payables. If the report combines "Accounts Payable and Accrued Liabilities" into one line, return null — do NOT use the combined number
 - contract_liability_change_pct: 合同负债同比变动(小数, 0.2=20%)
 - short_term_borrowings: 短期借款（含一年内到期的长期借款）/ Short-term Borrowings (incl. current portion of long-term debt)
 - long_term_borrowings: 长期借款 + 应付债券（不含一年内到期部分）/ Long-term Debt (incl. bonds payable, excl. current portion)
@@ -200,6 +211,14 @@ def run_ai_backfill(symbol: str) -> Dict[str, Any]:
     stock = db_session.query(Stock).filter_by(symbol=symbol.upper()).first()
     if not stock:
         raise ValueError(f"股票 {symbol} 不存在")
+
+    # Skip ETFs — they don't have meaningful financial statements
+    _name = (stock.name or '').upper()
+    _sym = symbol.upper()
+    if 'ETF' in _name or stock.sector in (None, '') and stock.industry in (None, '') and any(
+        k in _name for k in ('基金', '指数', 'FUND', 'INDEX', 'TRUST')
+    ):
+        raise ValueError(f"{symbol} 是 ETF/基金，无需 AI 补全财务数据")
 
     # Find target years: actual DB years with empty fields
     from sqlalchemy import desc
@@ -253,6 +272,7 @@ def run_ai_backfill(symbol: str) -> Dict[str, Any]:
     logger.info(f"[AI Backfill] {symbol}: calling AI for extraction ({len(prompt)} chars prompt)")
     from app.services.ai_client import create_message
 
+    final_text = None
     for attempt in range(3):
         try:
             final_text = create_message(
@@ -262,14 +282,16 @@ def run_ai_backfill(symbol: str) -> Dict[str, Any]:
             )
             break
         except Exception as e:
-            if _is_rate_limit_error(e) and attempt < 2:
-                wait = _parse_retry_after(e) or 15
-                logger.warning(f"[AI Backfill] Rate limited, waiting {wait}s...")
+            is_retryable = _is_rate_limit_error(e) or _is_overload_or_timeout(e)
+            if is_retryable and attempt < 2:
+                wait = _parse_retry_after(e) or (30 * (attempt + 1))
+                logger.warning(f"[AI Backfill] {symbol}: {type(e).__name__}, waiting {wait}s (attempt {attempt+1}/3)...")
                 time.sleep(wait)
             else:
                 raise
-    else:
-        raise RuntimeError("AI API 调用失败")
+
+    if final_text is None:
+        raise RuntimeError("AI API 调用失败（多次重试后仍未成功）")
 
     logger.info(f"[AI Backfill] {symbol}: got {len(final_text)} chars response")
 

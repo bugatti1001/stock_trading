@@ -46,6 +46,9 @@
         <button class="btn btn-outline-warning" id="refreshAllBtn" onclick="refreshAllStocks()">
             <i class="bi bi-arrow-clockwise"></i> 刷新行情
         </button>
+        <button class="btn btn-outline-secondary" id="aiBackfillAllBtn" onclick="aiBackfillAll()">
+            <i class="bi bi-magic"></i> AI 批量补全
+        </button>
         <a href="/stocks/manual_upload" class="btn btn-outline-info">
             <i class="bi bi-file-earmark-spreadsheet"></i> 手动上传
         </a>
@@ -718,7 +721,7 @@
     </div>
 </div>
 
-<!-- AI 补全结果 Modal -->
+<!-- AI 补全结果 Modal (单只) -->
 <div class="modal fade" id="aiBackfillModal" tabindex="-1">
     <div class="modal-dialog modal-xl">
         <div class="modal-content">
@@ -732,6 +735,84 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                 <button type="button" class="btn btn-primary" id="aiBackfillConfirmBtn" onclick="confirmBackfill()">确认保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- AI 批量补全选择 Modal -->
+<div class="modal fade" id="aiBackfillSelectModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-magic me-2"></i>AI 批量补全 - 选择股票</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" style="max-height:60vh;overflow-y:auto;">
+                <div class="mb-2 d-flex justify-content-between align-items-center">
+                    <div>
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="bfSelectAll()">全选</button>
+                        <button class="btn btn-sm btn-outline-secondary me-1" onclick="bfSelectNone()">全不选</button>
+                        <button class="btn btn-sm btn-outline-info" onclick="bfSelectNotDone()">选未补全</button>
+                    </div>
+                    <span class="text-muted" id="bfSelectCount">已选 0 只</span>
+                </div>
+                <table class="table table-sm table-hover mb-0" style="font-size:.88rem">
+                    <thead><tr><th style="width:35px"><input type="checkbox" id="bfSelectAllCb" onchange="bfToggleAll(this.checked)"></th><th>代码</th><th>名称</th><th>状态</th></tr></thead>
+                    <tbody id="bfSelectBody"><!-- Dynamically populated --></tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <div class="text-muted me-auto" style="font-size:.82rem">每只股票约需 10-30 秒</div>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="bfSelectStartBtn" onclick="startBatchBackfill()">
+                    <i class="bi bi-magic me-1"></i>开始补全
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- AI 批量补全进度 Modal -->
+<div class="modal fade" id="aiBackfillAllProgressModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-magic me-2"></i>AI 批量补全</h5>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span id="bfAllProgressText">准备中...</span>
+                        <span id="bfAllProgressCount">0/0</span>
+                    </div>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="bfAllProgressBar" style="width:0%"></div>
+                    </div>
+                </div>
+                <div id="bfAllLog" style="max-height:200px;overflow-y:auto;font-size:.82rem;background:#f8f9fa;padding:8px;border-radius:4px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="bfAllCancelBtn" onclick="cancelBackfillAll()">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- AI 批量补全冲突审核 Modal -->
+<div class="modal fade" id="aiBackfillAllReviewModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle text-warning me-2"></i>AI 批量补全 - 冲突审核</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="aiBackfillAllReviewBody" style="max-height:70vh;overflow-y:auto;">
+                <!-- Dynamically populated -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">跳过冲突</button>
+                <button type="button" class="btn btn-primary" id="bfAllReviewConfirmBtn" onclick="confirmBackfillAllReview()">确认保存</button>
             </div>
         </div>
     </div>
@@ -1281,13 +1362,19 @@ async function aiBackfill(symbol) {
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
 
     try {
-        const res = await fetch(`/api/stocks/${symbol}/ai-backfill`, { method: 'POST' });
+        const controller = new AbortController();
+        const fetchTimeout = setTimeout(() => controller.abort(), 180000); // 3 min timeout
+        const res = await fetch(`/api/stocks/${symbol}/ai-backfill`, {
+            method: 'POST', signal: controller.signal
+        });
+        clearTimeout(fetchTimeout);
         const data = await res.json();
         if (!data.success) { alert(`AI 补全失败: ${data.error}`); return; }
         _backfillResult = data.data;
         showBackfillModal(_backfillResult);
     } catch (e) {
-        alert(`AI 补全请求失败: ${e.message}`);
+        const msg = e.name === 'AbortError' ? '请求超时（3分钟），请稍后重试' : e.message;
+        alert(`AI 补全请求失败: ${msg}`);
     } finally {
         btn.disabled = false;
         btn.innerHTML = origHTML;
@@ -1348,11 +1435,11 @@ function showBackfillModal(result) {
                     <td>${formatBackfillValue(field, vals.ai)}</td>
                     <td>
                         <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="${radioName}" value="current" checked>
+                            <input class="form-check-input" type="radio" name="${radioName}" value="current">
                             <label class="form-check-label">保留当前</label>
                         </div>
                         <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="${radioName}" value="ai">
+                            <input class="form-check-input" type="radio" name="${radioName}" value="ai" checked>
                             <label class="form-check-label">使用AI值</label>
                         </div>
                     </td>
@@ -1433,6 +1520,342 @@ async function confirmBackfill() {
         btn.disabled = false;
         btn.textContent = '确认保存';
     }
+}
+
+/* ========== AI 批量补全 ========== */
+
+let _bfAllCancelled = false;
+let _bfAllConflicts = []; // [{symbol, name, result}]
+
+function cancelBackfillAll() {
+    _bfAllCancelled = true;
+    document.getElementById('bfAllCancelBtn').disabled = true;
+    document.getElementById('bfAllCancelBtn').textContent = '正在停止...';
+}
+
+function _bfAllLog(msg, type) {
+    const log = document.getElementById('bfAllLog');
+    const cls = type === 'ok' ? 'text-success' : type === 'warn' ? 'text-warning' : type === 'err' ? 'text-danger' : '';
+    log.innerHTML += `<div class="${cls}">${msg}</div>`;
+    log.scrollTop = log.scrollHeight;
+}
+
+let _bfAllStocks = []; // populated by selection modal
+
+function aiBackfillAll() {
+    // Collect all stocks from the table
+    const rows = document.querySelectorAll('.summary-row');
+    _bfAllStocks = [];
+    rows.forEach(row => {
+        const link = row.querySelector('a.fw-bold');
+        const nameCell = row.querySelectorAll('td')[2];
+        const badges = row.querySelectorAll('.badge');
+        const hasAiBackfill = Array.from(badges).some(b => b.textContent.trim() === 'AI补全');
+        if (link) _bfAllStocks.push({
+            symbol: link.textContent.trim(),
+            name: nameCell ? nameCell.textContent.trim() : '',
+            hasAiBackfill,
+        });
+    });
+
+    if (!_bfAllStocks.length) { alert('股票池为空'); return; }
+
+    // Populate selection modal
+    const body = document.getElementById('bfSelectBody');
+    body.innerHTML = _bfAllStocks.map((s, i) => `<tr>
+        <td><input type="checkbox" class="bf-select-cb" data-index="${i}" onchange="bfUpdateCount()" ${s.hasAiBackfill ? '' : 'checked'}></td>
+        <td class="fw-bold">${s.symbol}</td>
+        <td>${s.name}</td>
+        <td>${s.hasAiBackfill
+            ? '<span class="badge bg-info text-white" style="font-size:.7rem">已补全</span>'
+            : '<span class="badge bg-light text-dark border" style="font-size:.7rem">未补全</span>'}</td>
+    </tr>`).join('');
+
+    bfUpdateCount();
+    new bootstrap.Modal(document.getElementById('aiBackfillSelectModal')).show();
+}
+
+function bfSelectAll() { document.querySelectorAll('.bf-select-cb').forEach(cb => cb.checked = true); bfUpdateCount(); }
+function bfSelectNone() { document.querySelectorAll('.bf-select-cb').forEach(cb => cb.checked = false); bfUpdateCount(); }
+function bfSelectNotDone() {
+    document.querySelectorAll('.bf-select-cb').forEach(cb => {
+        cb.checked = !_bfAllStocks[cb.dataset.index].hasAiBackfill;
+    });
+    bfUpdateCount();
+}
+function bfToggleAll(checked) { document.querySelectorAll('.bf-select-cb').forEach(cb => cb.checked = checked); bfUpdateCount(); }
+function bfUpdateCount() {
+    const n = document.querySelectorAll('.bf-select-cb:checked').length;
+    document.getElementById('bfSelectCount').textContent = `已选 ${n} 只`;
+    document.getElementById('bfSelectStartBtn').disabled = n === 0;
+    document.getElementById('bfSelectAllCb').checked = n === _bfAllStocks.length;
+}
+
+async function startBatchBackfill() {
+    // Collect selected stocks
+    const selected = [];
+    document.querySelectorAll('.bf-select-cb:checked').forEach(cb => {
+        selected.push(_bfAllStocks[cb.dataset.index]);
+    });
+    if (!selected.length) { alert('请至少选择一只股票'); return; }
+
+    const stocks = selected;
+
+    // Close selection modal, open progress modal
+    bootstrap.Modal.getInstance(document.getElementById('aiBackfillSelectModal')).hide();
+
+    _bfAllCancelled = false;
+    _bfAllConflicts = [];
+
+    document.getElementById('bfAllProgressText').textContent = '准备中...';
+    document.getElementById('bfAllProgressCount').textContent = `0/${stocks.length}`;
+    document.getElementById('bfAllProgressBar').style.width = '0%';
+    document.getElementById('bfAllLog').innerHTML = '';
+    document.getElementById('bfAllCancelBtn').disabled = false;
+    document.getElementById('bfAllCancelBtn').textContent = '取消';
+    // Wait a moment for the selection modal to fully close before opening progress modal
+    await new Promise(r => setTimeout(r, 400));
+    const progressModal = new bootstrap.Modal(document.getElementById('aiBackfillAllProgressModal'));
+    progressModal.show();
+
+    let autoSaved = 0, conflictStocks = 0, skipped = 0, failed = 0;
+
+    for (let i = 0; i < stocks.length; i++) {
+        if (_bfAllCancelled) {
+            _bfAllLog(`已取消，处理了 ${i} / ${stocks.length} 只`, 'warn');
+            break;
+        }
+
+        const { symbol, name } = stocks[i];
+        const pct = Math.round(((i + 1) / stocks.length) * 100);
+        document.getElementById('bfAllProgressText').textContent = `正在补全: ${symbol} ${name}`;
+        document.getElementById('bfAllProgressCount').textContent = `${i + 1}/${stocks.length}`;
+        document.getElementById('bfAllProgressBar').style.width = pct + '%';
+
+        try {
+            // Step 1: Call AI backfill (with retry on rate limit / timeout)
+            let data = null;
+            for (let retry = 0; retry < 3; retry++) {
+                const controller = new AbortController();
+                const fetchTimeout = setTimeout(() => controller.abort(), 180000); // 3 min timeout
+                try {
+                    const res = await fetch(`/api/stocks/${symbol}/ai-backfill`, {
+                        method: 'POST', signal: controller.signal
+                    });
+                    clearTimeout(fetchTimeout);
+                    data = await res.json();
+
+                    // If rate limited / overloaded (429), wait and retry
+                    if (res.status === 429 && retry < 2) {
+                        const wait = data.retry_after || 30;
+                        _bfAllLog(`${symbol} ${name}: AI 服务繁忙，等待 ${wait} 秒后重试...`, 'warn');
+                        document.getElementById('bfAllProgressText').textContent =
+                            `等待 AI 服务恢复 (${wait}s)... 下一个: ${symbol}`;
+                        await new Promise(r => setTimeout(r, wait * 1000));
+                        if (_bfAllCancelled) break;
+                        data = null; // mark as needing retry
+                        continue;
+                    }
+                    break; // success or non-retryable error
+                } catch (fetchErr) {
+                    clearTimeout(fetchTimeout);
+                    if (fetchErr.name === 'AbortError') {
+                        // Timeout — wait and retry
+                        if (retry < 2) {
+                            const wait = 30 * (retry + 1);
+                            _bfAllLog(`${symbol} ${name}: 请求超时，等待 ${wait} 秒后重试...`, 'warn');
+                            document.getElementById('bfAllProgressText').textContent =
+                                `请求超时，等待中 (${wait}s)...`;
+                            await new Promise(r => setTimeout(r, wait * 1000));
+                            if (_bfAllCancelled) break;
+                            continue;
+                        }
+                    }
+                    throw fetchErr; // give up after retries
+                }
+            }
+
+            if (_bfAllCancelled) { break; }
+
+            if (!data || !data.success) {
+                _bfAllLog(`${symbol} ${name}: 失败 - ${data ? data.error : '多次重试后仍无响应'}`, 'err');
+                failed++;
+                continue;
+            }
+
+            const result = data.data;
+            const autoFilled = result.auto_filled || {};
+            const conflicts = result.conflicts || {};
+            const autoCount = Object.values(autoFilled).reduce((s, o) => s + Object.keys(o).length, 0);
+            const conflictCount = Object.values(conflicts).reduce((s, o) => s + Object.keys(o).length, 0);
+
+            if (autoCount === 0 && conflictCount === 0) {
+                const notFoundCount = Object.values(result.not_found || {}).reduce((s, o) => s + o.length, 0);
+                const unchangedCount = Object.values(result.unchanged || {}).reduce((s, o) => s + o.length, 0);
+                if (notFoundCount > 0) {
+                    _bfAllLog(`${symbol} ${name}: AI 未找到新数据（${notFoundCount} 个字段仍缺失）`, 'warn');
+                } else if (unchangedCount > 0) {
+                    _bfAllLog(`${symbol} ${name}: 数据已完整，AI 验证一致`, 'ok');
+                } else {
+                    _bfAllLog(`${symbol} ${name}: 无需补全`, '');
+                }
+                skipped++;
+                continue;
+            }
+
+            // Step 2: Auto-save non-conflict fields
+            if (autoCount > 0) {
+                const saveRes = await fetch(`/api/stocks/${symbol}/ai-backfill/confirm`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        auto_filled: autoFilled,
+                        conflict_resolutions: {},
+                        ai_values: {},
+                    })
+                });
+                const saveData = await saveRes.json();
+                if (saveData.success) {
+                    _bfAllLog(`${symbol} ${name}: 自动补全 ${autoCount} 个字段`, 'ok');
+                    autoSaved++;
+                } else {
+                    _bfAllLog(`${symbol} ${name}: 自动保存失败 - ${saveData.error}`, 'err');
+                }
+            }
+
+            // Step 3: Collect conflicts for review
+            if (conflictCount > 0) {
+                _bfAllConflicts.push({ symbol, name, result });
+                conflictStocks++;
+                _bfAllLog(`${symbol} ${name}: ${conflictCount} 个冲突字段待审核`, 'warn');
+            }
+
+        } catch (e) {
+            _bfAllLog(`${symbol} ${name}: 请求失败 - ${e.message}`, 'err');
+            failed++;
+        }
+    }
+
+    // Done - update progress
+    document.getElementById('bfAllProgressText').textContent = '完成';
+    document.getElementById('bfAllProgressBar').classList.remove('progress-bar-animated');
+    document.getElementById('bfAllProgressBar').style.width = '100%';
+    _bfAllLog(`\n完成: 自动补全 ${autoSaved} 只, 冲突 ${conflictStocks} 只, 跳过 ${skipped} 只, 失败 ${failed} 只`, '');
+
+    // Close progress modal after a short delay, then show review if needed
+    setTimeout(() => {
+        progressModal.hide();
+        if (_bfAllConflicts.length > 0) {
+            showBackfillAllReview();
+        } else {
+            alert(`批量补全完成！\n自动补全: ${autoSaved} 只\n跳过: ${skipped} 只\n失败: ${failed} 只`);
+            if (autoSaved > 0) location.reload();
+        }
+    }, 800);
+}
+
+function showBackfillAllReview() {
+    const body = document.getElementById('aiBackfillAllReviewBody');
+    let html = '';
+
+    const totalConflicts = _bfAllConflicts.reduce((s, item) => {
+        return s + Object.values(item.result.conflicts || {}).reduce((ss, o) => ss + Object.keys(o).length, 0);
+    }, 0);
+
+    html += `<div class="alert alert-warning py-2 mb-3">
+        <strong>${_bfAllConflicts.length}</strong> 只股票共 <strong>${totalConflicts}</strong> 个字段存在冲突，请逐一选择使用哪个值。
+    </div>`;
+
+    for (const item of _bfAllConflicts) {
+        const { symbol, name, result } = item;
+        const conflicts = result.conflicts || {};
+        const conflictCount = Object.values(conflicts).reduce((s, o) => s + Object.keys(o).length, 0);
+
+        html += `<div class="card mb-3">
+            <div class="card-header py-2">
+                <strong>${symbol}</strong> ${name}
+                <span class="badge bg-warning text-dark ms-2">${conflictCount} 个冲突</span>
+            </div>
+            <div class="card-body p-2">
+                <table class="table table-sm table-bordered mb-0" style="font-size:.83rem">
+                    <thead><tr><th>年份</th><th>字段</th><th>当前值</th><th>AI 值</th><th>选择</th></tr></thead>
+                    <tbody>`;
+
+        for (const [year, fields] of Object.entries(conflicts)) {
+            for (const [field, vals] of Object.entries(fields)) {
+                const radioName = `bfall_${symbol}_${year}_${field}`;
+                html += `<tr class="table-warning">
+                    <td>FY${year}</td>
+                    <td>${FIELD_LABELS[field] || field}</td>
+                    <td>${formatBackfillValue(field, vals.current)}</td>
+                    <td>${formatBackfillValue(field, vals.ai)}</td>
+                    <td>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="${radioName}" value="current">
+                            <label class="form-check-label">保留</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="${radioName}" value="ai" checked>
+                            <label class="form-check-label">AI值</label>
+                        </div>
+                    </td>
+                </tr>`;
+            }
+        }
+
+        html += `</tbody></table></div></div>`;
+    }
+
+    body.innerHTML = html;
+    new bootstrap.Modal(document.getElementById('aiBackfillAllReviewModal')).show();
+}
+
+async function confirmBackfillAllReview() {
+    const btn = document.getElementById('bfAllReviewConfirmBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>保存中…';
+
+    let savedCount = 0, failedCount = 0;
+
+    for (const item of _bfAllConflicts) {
+        const { symbol, result } = item;
+        const conflicts = result.conflicts || {};
+
+        const conflictResolutions = {};
+        const aiValues = {};
+        for (const [year, fields] of Object.entries(conflicts)) {
+            conflictResolutions[year] = {};
+            aiValues[year] = {};
+            for (const [field, vals] of Object.entries(fields)) {
+                const radioName = `bfall_${symbol}_${year}_${field}`;
+                const chosen = document.querySelector(`input[name="${radioName}"]:checked`);
+                conflictResolutions[year][field] = chosen ? chosen.value : 'current';
+                aiValues[year][field] = vals.ai;
+            }
+        }
+
+        try {
+            const res = await fetch(`/api/stocks/${symbol}/ai-backfill/confirm`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    auto_filled: {},
+                    conflict_resolutions: conflictResolutions,
+                    ai_values: aiValues,
+                })
+            });
+            const data = await res.json();
+            if (data.success) savedCount++; else failedCount++;
+        } catch (e) {
+            failedCount++;
+        }
+    }
+
+    btn.disabled = false;
+    btn.textContent = '确认保存';
+    bootstrap.Modal.getInstance(document.getElementById('aiBackfillAllReviewModal')).hide();
+    alert(`冲突审核完成！保存 ${savedCount} 只，失败 ${failedCount} 只`);
+    location.reload();
 }
 
 async function importStocks(event) {

@@ -81,7 +81,7 @@ def stream_message(system: str = '',
 
 def _claude_create(api_key, model, system, messages, max_tokens, temperature):
     import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
     kwargs = dict(model=model, max_tokens=max_tokens, messages=messages)
     if system:
         kwargs['system'] = system

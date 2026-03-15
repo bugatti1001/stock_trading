@@ -849,11 +849,43 @@ def ai_backfill(symbol: str) -> tuple[Response, int]:
         return success_response(data=result)
     except ValueError as e:
         return error_response(str(e), 400)
+    except RuntimeError as e:
+        # RuntimeError from ai_backfill_service: "无法获取网页" etc.
+        # These are user-facing errors, return 422 so the message is not masked
+        logger.warning(f"[AI Backfill] {symbol}: {e}")
+        return error_response(str(e), 422)
     except Exception as e:
-        # Surface auth errors clearly instead of generic 500
         err_str = str(e)
+        err_lower = err_str.lower()
+        type_name = type(e).__name__
+
+        # Auth errors
         if 'authentication_error' in err_str or 'invalid x-api-key' in err_str:
             return error_response('Claude API Key 无效，请在登录页重新输入正确的 API Key', 401)
+
+        # Rate limit / overload / timeout → return retry_after hint for frontend
+        is_retryable = any(k in type_name for k in ('RateLimit', 'Timeout', 'Overloaded', 'APITimeout', 'APIConnection'))
+        if not is_retryable:
+            is_retryable = any(k in err_lower for k in ('rate', 'timeout', 'overloaded', '529', '503'))
+
+        if is_retryable:
+            # Try to extract retry-after from error response headers
+            retry_after = 30
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    ra = e.response.headers.get('retry-after')
+                    if ra:
+                        retry_after = int(float(ra)) + 5
+                except (ValueError, TypeError, AttributeError):
+                    pass
+
+            logger.warning(f"[AI Backfill] {symbol} 可重试错误: {type_name}: {err_str}")
+            return error_response(
+                f'AI 服务暂时不可用（{type_name}），请稍后重试',
+                429,
+                retry_after=retry_after,
+            )
+
         logger.error(f"[AI Backfill] {symbol} 失败: {e}", exc_info=True)
         return error_response(err_str, 500)
 
