@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, JSON, Index
 from sqlalchemy.orm import relationship
 from .base import BaseModel, _utcnow

@@ -806,7 +806,7 @@ def manual_upload_confirm() -> tuple[Response, int]:
         refreshed = 0
         for sym in new_stock_symbols:
             try:
-                stock_service = StockService()
+                stock_service = _get_stock_service()
                 stock_service.refresh_stock_data(sym, price_only=True)
                 refreshed += 1
             except Exception as e:

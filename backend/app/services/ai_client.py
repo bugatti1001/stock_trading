@@ -7,6 +7,27 @@ from typing import Iterator, List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Client instance caches keyed by API key — avoids creating new connections on every call
+_anthropic_clients: Dict[str, object] = {}
+_openai_clients: Dict[str, object] = {}
+
+
+def _get_anthropic_client(api_key: str):
+    """Return a cached Anthropic client for the given API key."""
+    import anthropic
+    if api_key not in _anthropic_clients:
+        _anthropic_clients[api_key] = anthropic.Anthropic(api_key=api_key, timeout=120.0)
+    return _anthropic_clients[api_key]
+
+
+def _get_openai_client(api_key: str, base_url: str):
+    """Return a cached OpenAI-compatible client for the given API key + base URL."""
+    import openai
+    cache_key = f"{api_key}|{base_url}"
+    if cache_key not in _openai_clients:
+        _openai_clients[cache_key] = openai.OpenAI(api_key=api_key, base_url=base_url)
+    return _openai_clients[cache_key]
+
 
 def _get_provider_and_keys(provider: Optional[str] = None,
                            api_key: Optional[str] = None):
@@ -80,8 +101,7 @@ def stream_message(system: str = '',
 # ── Claude (Anthropic) ──────────────────────────────────────────
 
 def _claude_create(api_key, model, system, messages, max_tokens, temperature):
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
+    client = _get_anthropic_client(api_key)
     kwargs = dict(model=model, max_tokens=max_tokens, messages=messages)
     if system:
         kwargs['system'] = system
@@ -92,8 +112,7 @@ def _claude_create(api_key, model, system, messages, max_tokens, temperature):
 
 
 def _claude_stream(api_key, model, system, messages, max_tokens):
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
+    client = _get_anthropic_client(api_key)
     kwargs = dict(model=model, max_tokens=max_tokens, messages=messages)
     if system:
         kwargs['system'] = system
@@ -115,9 +134,8 @@ def _build_openai_messages(system, messages):
 
 
 def _minimax_create(api_key, model, system, messages, max_tokens, temperature):
-    import openai
     from app.config.settings import MINIMAX_BASE_URL
-    client = openai.OpenAI(api_key=api_key, base_url=MINIMAX_BASE_URL)
+    client = _get_openai_client(api_key, MINIMAX_BASE_URL)
     kwargs = dict(
         model=model,
         messages=_build_openai_messages(system, messages),
@@ -130,9 +148,8 @@ def _minimax_create(api_key, model, system, messages, max_tokens, temperature):
 
 
 def _minimax_stream(api_key, model, system, messages, max_tokens):
-    import openai
     from app.config.settings import MINIMAX_BASE_URL
-    client = openai.OpenAI(api_key=api_key, base_url=MINIMAX_BASE_URL)
+    client = _get_openai_client(api_key, MINIMAX_BASE_URL)
     stream = client.chat.completions.create(
         model=model,
         messages=_build_openai_messages(system, messages),

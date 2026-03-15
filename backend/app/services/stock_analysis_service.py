@@ -22,6 +22,13 @@ from app.utils.cache import cached, cache
 
 logger = logging.getLogger(__name__)
 
+# 数据来源中英文映射（模块级常量，各函数共用）
+_SRC_LABELS = {
+    'Xueqiu': '雪球', 'Yahoo Finance': 'Yahoo', 'Finnhub': 'Finnhub',
+    'SEC EDGAR': 'SEC', 'SEC Report': 'SEC解析',
+    'Manual Upload': '手动上传', 'AI Backfill': 'AI补全',
+}
+
 
 # ========== 格式化工具函数 ==========
 
@@ -102,7 +109,7 @@ def build_earnings_quality(fins: List[FinancialData], latest: Optional[Financial
         multi_kpis = compute_multi_period_kpis(fins)
         data['multi_period_kpis'] = multi_kpis
 
-    _SRC_LABELS = {'Xueqiu': '雪球', 'Yahoo Finance': 'Yahoo', 'Finnhub': 'Finnhub', 'SEC EDGAR': 'SEC', 'SEC Report': 'SEC解析', 'Manual Upload': '手动上传', 'AI Backfill': 'AI补全'}
+
 
     for f in fins:
         kpis = compute_single_period_kpis(f)
@@ -157,7 +164,7 @@ def build_fin_health(latest: Optional[FinancialData]) -> Dict[str, Any]:
             'net_cash': None,
         }
     kpis = compute_single_period_kpis(latest)
-    _SRC_LABELS = {'Xueqiu': '雪球', 'Yahoo Finance': 'Yahoo', 'Finnhub': 'Finnhub', 'SEC EDGAR': 'SEC', 'SEC Report': 'SEC解析', 'Manual Upload': '手动上传', 'AI Backfill': 'AI补全'}
+
     ext = latest.extended_metrics_dict or {}
     fs_raw = ext.get('field_sources', {})
     return {
@@ -194,7 +201,7 @@ def build_fin_health(latest: Optional[FinancialData]) -> Dict[str, Any]:
 
 def build_segments(latest: Optional[FinancialData]) -> Dict[str, Any]:
     """分业务拆解（来自 extended_metrics），附带数据来源"""
-    _SRC_LABELS = {'Xueqiu': '雪球', 'Yahoo Finance': 'Yahoo', 'Finnhub': 'Finnhub', 'SEC EDGAR': 'SEC', 'SEC Report': 'SEC解析', 'Manual Upload': '手动上传', 'AI Backfill': 'AI补全'}
+
     if not latest:
         return {'segments': [], 'data_source': ''}
     ext = latest.extended_metrics_dict or {}
@@ -208,7 +215,7 @@ def build_segments(latest: Optional[FinancialData]) -> Dict[str, Any]:
 
 def build_moat(fins: List[FinancialData], latest: Optional[FinancialData]) -> Dict[str, Any]:
     """护城河：毛利率趋势、市场份额、留存率"""
-    _SRC_LABELS = {'Xueqiu': '雪球', 'Yahoo Finance': 'Yahoo', 'Finnhub': 'Finnhub', 'SEC EDGAR': 'SEC', 'SEC Report': 'SEC解析', 'Manual Upload': '手动上传', 'AI Backfill': 'AI补全'}
+
     data = {
         'fd_id': latest.id if latest else None,
         'data_source': '',
@@ -241,7 +248,7 @@ def build_moat(fins: List[FinancialData], latest: Optional[FinancialData]) -> Di
 
 def build_capital_alloc(fins: List[FinancialData]) -> Dict[str, Any]:
     """资本配置：每股分红、股本变化、并购、新业务投入"""
-    _SRC_LABELS = {'Xueqiu': '雪球', 'Yahoo Finance': 'Yahoo', 'Finnhub': 'Finnhub', 'SEC EDGAR': 'SEC', 'SEC Report': 'SEC解析', 'Manual Upload': '手动上传', 'AI Backfill': 'AI补全'}
+
     data = {'years': []}
     for f in fins:
         ext = f.extended_metrics_dict or {}
@@ -309,9 +316,8 @@ def enrich_stock_for_display(stock: Stock, preloaded_fins: List[FinancialData] =
     stock._currency_sign = get_currency_sign(stock._currency)
 
     # 数据来源标签
-    _SOURCE_LABELS = {'Xueqiu': '雪球', 'Yahoo Finance': 'Yahoo', 'Finnhub': 'Finnhub', 'SEC EDGAR': 'SEC', 'SEC Report': 'SEC解析', 'Manual Upload': '手动上传', 'AI Backfill': 'AI补全'}
     primary_src = extra.get('data_source', '')
-    stock._data_source_label = _SOURCE_LABELS.get(primary_src, primary_src)
+    stock._data_source_label = _SRC_LABELS.get(primary_src, primary_src)
     stock._field_sources = extra.get('field_sources') or {}
 
     # 从 field_sources 中提取所有贡献数据源，用于主表 "来源" 列展示
@@ -329,7 +335,7 @@ def enrich_stock_for_display(stock: Stock, preloaded_fins: List[FinancialData] =
         for _src in (f_ext.get('field_sources') or {}).values():
             if _src:
                 all_sources_raw.add(_src)
-    stock._all_source_labels = [_SOURCE_LABELS.get(s, s) for s in sorted(all_sources_raw)]
+    stock._all_source_labels = [_SRC_LABELS.get(s, s) for s in sorted(all_sources_raw)]
 
     return stock
 

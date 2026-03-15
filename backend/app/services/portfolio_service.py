@@ -82,13 +82,20 @@ def compute_holdings() -> List[Dict]:
                 h['first_buy_date'] = None  # 重置，下次买入时更新
 
     # 过滤出当前有持仓的股票
+    active_symbols = [s for s, h in holdings_map.items() if h['net_shares'] > 0]
+    # Batch-load all stocks in one query to avoid N+1
+    stocks_map = {}
+    if active_symbols:
+        stocks = db_session.query(Stock).filter(Stock.symbol.in_(active_symbols)).all()
+        stocks_map = {s.symbol: s for s in stocks}
+
     active_holdings = []
     for symbol, h in holdings_map.items():
         if h['net_shares'] <= 0:
             continue
 
         # 查找当前价格
-        stock = db_session.query(Stock).filter_by(symbol=symbol).first()
+        stock = stocks_map.get(symbol)
         current_price = stock.current_price if stock else None
 
         holding = {

@@ -632,7 +632,6 @@ def _init_ai_holdings_from_user():
     如果 AI 没有任何交易记录，用用户当前持仓初始化 AI 持仓。
     只执行一次（首次调用时）。
     """
-    from app.config.database import db_session
     from app.models.ai_trade_record import AiTradeRecord
     from app.services.portfolio_service import compute_holdings
     from datetime import date as date_type, timedelta
@@ -672,7 +671,6 @@ def compute_ai_holdings() -> Dict[str, Dict]:
     首次调用时自动从用户持仓初始化。
     返回 { "AAPL": {"shares": 50, "avg_cost": 150.5}, ... }
     """
-    from app.config.database import db_session
     from app.models.ai_trade_record import AiTradeRecord
 
     # 首次自动初始化
@@ -708,7 +706,6 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     """
     from app.config.settings import AI_TRADE_MAX_TOKENS
     from app.services.news_analysis_service import build_news_analysis_summary
-    from app.config.database import db_session
     from app.models.user_setting import UserSetting
     from app.models.ai_trade_record import AiTradeRecord
     from datetime import date as date_type
@@ -718,17 +715,12 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
 
     # 检查今天是否已执行过 AI 交易（排除初始化/重置记录）
     today = date_type.today()
-    existing_today = db_session.query(AiTradeRecord).filter(
+    today_records = db_session.query(AiTradeRecord).filter(
         AiTradeRecord.trade_date == today,
         ~AiTradeRecord.reason.like('%初始化%'),
         ~AiTradeRecord.reason.like('%重置%'),
-    ).first()
-    if existing_today:
-        today_records = db_session.query(AiTradeRecord).filter(
-            AiTradeRecord.trade_date == today,
-            ~AiTradeRecord.reason.like('%初始化%'),
-            ~AiTradeRecord.reason.like('%重置%'),
-        ).all()
+    ).all()
+    if today_records:
         return {
             r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
             for r in today_records

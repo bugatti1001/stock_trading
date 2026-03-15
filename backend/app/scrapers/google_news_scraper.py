@@ -61,11 +61,6 @@ def _set_cache(symbol: str, news: List[Dict]) -> None:
         _news_cache[(symbol, today_str)] = news
 
 
-def _filter_today_only(news_list: List[Dict]) -> List[Dict]:
-    """Deprecated: no longer filters. Returns all news items as-is."""
-    return news_list
-
-
 class NewsSearchError(Exception):
     """News API error"""
     pass
@@ -287,13 +282,11 @@ def search_stock_news(symbol: str, stock_name: str = '',
         # CN and HK → Eastmoney
         raw = _search_stock_news_eastmoney(symbol, stock_name, days_back, num_results)
 
-    # Only keep today's news
-    today_news = _filter_today_only(raw)
-    logger.info(f"{symbol}: {len(raw)} raw → {len(today_news)} today-only items")
+    logger.info(f"{symbol}: {len(raw)} news items fetched")
 
-    # Cache the filtered result
-    _set_cache(symbol, today_news)
-    return today_news
+    # Cache the result
+    _set_cache(symbol, raw)
+    return raw
 
 
 def fetch_news_for_stocks(stocks: List[Dict],

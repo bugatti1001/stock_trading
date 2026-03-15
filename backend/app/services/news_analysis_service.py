@@ -14,7 +14,7 @@ AI 驱动的股票新闻分析服务
 """
 import json
 import logging
-from datetime import datetime, timezone, date, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Tuple, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 

@@ -5,15 +5,13 @@ Web UI Routes
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
 from app.config.database import db_session
 from app.models.stock import Stock
-from app.models.financial_data import FinancialData, ReportPeriod
+from app.models.financial_data import FinancialData
 from app.models.annual_report import AnnualReport
 from app.models.user_principle import UserPrinciple
 from app.models.conversation import Conversation
 from app.services.stock_analysis_service import enrich_stock_for_display, batch_load_recent_financials
 from app.utils.market_utils import get_currency_sign
 from sqlalchemy import func, desc, case
-from sqlalchemy.orm import joinedload
-import json
 
 bp = Blueprint('web', __name__)
 

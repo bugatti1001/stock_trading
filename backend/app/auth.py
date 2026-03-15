@@ -7,6 +7,7 @@ No external auth libraries required.
      AUTH_USERS=admin:stockadmin123,charlie:charlie123,father:father123
   2. 兼容旧版单用户环境变量 AUTH_USERNAME / AUTH_PASSWORD
 """
+import hmac
 import os
 import logging
 from flask import Blueprint, request, session, redirect, url_for, render_template, jsonify
@@ -67,10 +68,13 @@ def login():
 
         users = _load_users()
 
-        if username in users and users[username] == password:
+        if username in users and hmac.compare_digest(users[username], password):
             session['authenticated'] = True
             session['username'] = username
             next_url = request.args.get('next') or request.form.get('next') or '/'
+            # Validate next_url is a safe relative path (prevent open redirect)
+            if not next_url.startswith('/') or next_url.startswith('//'):
+                next_url = '/'
 
             # 将 API Key 持久化到用户的 SQLite 数据库
             api_key = request.form.get('api_key', '').strip()
@@ -115,7 +119,3 @@ def _save_setting(username: str, key: str, value: str):
             s.close()
     except Exception as e:
         logger.warning(f"保存设置失败 [{username}/{key}]: {e}")
-
-
-# 向后兼容
-_save_api_key = lambda username, api_key: _save_setting(username, 'anthropic_api_key', api_key)

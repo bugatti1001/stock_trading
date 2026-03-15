@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
@@ -275,7 +274,6 @@ class StockService:
         Returns:
             保存的财务数据记录数
         """
-        import json as _json
         stock = self.get_stock_by_symbol(symbol)
         if not stock:
             logger.error(f"股票 {symbol} 不存在")
