@@ -42,11 +42,7 @@
                             <i class="bi bi-collection"></i> 股票池
                         </a>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'web.financial_report' %}active{% endif %}" href="{{ url_for('web.financial_report') }}">
-                            <i class="bi bi-file-earmark-text"></i> 财报管理
-                        </a>
-                    </li>
+                    <!-- 财报管理已降级为隐藏功能，仍可通过 /financial_report 直接访问 -->
                     <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'web.media_center' %}active{% endif %}" href="{{ url_for('web.media_center') }}">
                             <i class="bi bi-newspaper"></i> 新闻中心
