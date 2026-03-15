@@ -73,20 +73,6 @@ def create_app():
     def health():
         return {'status': 'ok', 'message': 'Stock Trading API is running'}
 
-    # API docs redirect
-    @app.route('/api/docs')
-    def api_docs():
-        return '''
-        <html>
-        <head><title>API Documentation</title></head>
-        <body style="font-family: sans-serif; padding: 20px;">
-            <h1>Stock Analysis API Documentation</h1>
-            <p>Visit <a href="/">Dashboard</a> for the web interface</p>
-            <p>API Endpoints available at <a href="/health">/health</a></p>
-        </body>
-        </html>
-        '''
-
     return app
 
 

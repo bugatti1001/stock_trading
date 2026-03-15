@@ -178,6 +178,19 @@ def trade_journal():
     return render_template('trade_journal.html')
 
 
+@bp.route('/guide')
+def user_guide():
+    """用户使用指南"""
+    import os
+    guide_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'USER_GUIDE.md')
+    try:
+        with open(guide_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except FileNotFoundError:
+        content = '# 使用指南\n\n文档正在编写中...'
+    return render_template('guide.html', content=content)
+
+
 # AJAX API endpoints for web interface
 @bp.route('/api/web/stats')
 def web_stats():

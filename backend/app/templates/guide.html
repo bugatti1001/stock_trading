@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}使用指南 - 股票分析系统{% endblock %}
+
+{% block extra_css %}
+<style>
+.guide-content { max-width: 900px; margin: 0 auto; font-size: .95rem; line-height: 1.8; }
+.guide-content h1 { font-size: 1.8rem; margin-bottom: 1.5rem; padding-bottom: .5rem; border-bottom: 2px solid var(--bs-primary); }
+.guide-content h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: .8rem; color: var(--bs-primary); }
+.guide-content h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: .6rem; }
+.guide-content h4 { font-size: 1.05rem; margin-top: 1.2rem; }
+.guide-content table { width: 100%; margin: 1rem 0; font-size: .88rem; }
+.guide-content table th { background: #f8f9fa; }
+.guide-content table th, .guide-content table td { padding: 6px 12px; border: 1px solid #dee2e6; }
+.guide-content code { background: #f1f3f5; padding: 1px 5px; border-radius: 3px; font-size: .88em; }
+.guide-content pre { background: #f8f9fa; padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-size: .85rem; }
+.guide-content pre code { background: none; padding: 0; }
+.guide-content blockquote { border-left: 3px solid var(--bs-primary); padding-left: 1rem; color: #555; margin: 1rem 0; }
+.guide-content hr { margin: 2rem 0; }
+.guide-content strong { color: #333; }
+.guide-toc { position: sticky; top: 80px; font-size: .85rem; }
+.guide-toc a { color: #555; text-decoration: none; display: block; padding: 3px 0; }
+.guide-toc a:hover { color: var(--bs-primary); }
+.guide-toc .toc-h3 { padding-left: 1rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-9">
+        <div class="guide-content" id="guideContent">
+            <!-- Rendered by JS from markdown -->
+        </div>
+    </div>
+    <div class="col-lg-3 d-none d-lg-block">
+        <div class="guide-toc" id="guideToc"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+const md = {{ content | tojson }};
+document.getElementById('guideContent').innerHTML = marked.parse(md);
+
+// Build TOC from rendered headings
+const toc = document.getElementById('guideToc');
+const headings = document.querySelectorAll('.guide-content h2, .guide-content h3');
+let tocHtml = '<h6 class="text-muted mb-2">目录</h6>';
+headings.forEach((h, i) => {
+    const id = 'section-' + i;
+    h.id = id;
+    const cls = h.tagName === 'H3' ? 'toc-h3' : '';
+    tocHtml += `<a href="#${id}" class="${cls}">${h.textContent}</a>`;
+});
+toc.innerHTML = tocHtml;
+</script>
+{% endblock %}
