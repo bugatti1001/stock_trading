@@ -84,6 +84,7 @@ def _run_migrations_all_users():
     from migrations.fix_us_stock_currency import run as fix_us_currency
     from migrations.add_include_principles import run as migrate_include_principles
     from migrations.fix_shares_outstanding_unit import run as fix_shares_unit
+    from migrations.add_ai_trade_id import run as migrate_ai_trade_id
 
     migrations = [
         ('数据库迁移检查', migrate_financial_data_v3),
@@ -92,6 +93,7 @@ def _run_migrations_all_users():
         ('美股货币/来源修复', fix_us_currency),
         ('对话投资原则字段迁移检查', migrate_include_principles),
         ('shares_outstanding单位修复', fix_shares_unit),
+        ('AI交易讨论字段迁移', migrate_ai_trade_id),
     ]
 
     for username, eng in get_all_engines().items():

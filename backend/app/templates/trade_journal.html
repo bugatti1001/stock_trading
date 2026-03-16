@@ -58,6 +58,79 @@
     .stat-card.red   { border-color: #dc3545; }
     .stat-card.orange{ border-color: #fd7e14; }
     #emptyState { display: none; }
+    /* AI 交易聊天侧边栏 */
+    .chat-sidebar {
+        position: fixed;
+        top: 0; right: -500px;
+        width: 480px;
+        height: 100vh;
+        background: #fff;
+        box-shadow: -4px 0 24px rgba(0,0,0,.18);
+        z-index: 1056;
+        transition: right .3s ease;
+        display: flex;
+        flex-direction: column;
+    }
+    .chat-sidebar.open { right: 0; }
+    .chat-overlay {
+        display: none;
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,.4);
+        z-index: 1055;
+    }
+    .chat-overlay.show { display: block; }
+    .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+    .chat-msg-row { display: flex; align-items: flex-start; gap: 0.5rem; }
+    .chat-msg-row.user { flex-direction: row-reverse; }
+    .chat-msg-avatar {
+        width: 28px; height: 28px;
+        border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.75rem; font-weight: 700;
+        flex-shrink: 0;
+    }
+    .chat-msg-avatar.ai { background: #dbeafe; color: #1d4ed8; }
+    .chat-msg-avatar.user { background: #dcfce7; color: #166534; }
+    .chat-msg-bubble {
+        max-width: 80%;
+        padding: 0.6rem 0.9rem;
+        border-radius: 12px;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        word-break: break-word;
+    }
+    .chat-msg-row.user .chat-msg-bubble { background: #1d4ed8; color: #fff; border-bottom-right-radius: 4px; }
+    .chat-msg-row.ai .chat-msg-bubble { background: #f1f5f9; color: #1e293b; border-bottom-left-radius: 4px; }
+    .chat-msg-bubble h1, .chat-msg-bubble h2, .chat-msg-bubble h3 { font-size: 1rem; margin-top: 0.6rem; }
+    .chat-msg-bubble code { background: rgba(0,0,0,0.08); padding: 1px 4px; border-radius: 3px; font-size: 0.85em; }
+    .chat-msg-bubble pre { background: rgba(0,0,0,0.06); padding: 0.5rem; border-radius: 6px; overflow-x: auto; }
+    .chat-msg-row.user .chat-msg-bubble code { background: rgba(255,255,255,0.2); }
+    .chat-msg-bubble ul, .chat-msg-bubble ol { padding-left: 1.2rem; margin-bottom: 0; }
+    .chat-msg-bubble p:last-child { margin-bottom: 0; }
+    .chat-msg-bubble table { width: 100%; font-size: 0.85em; border-collapse: collapse; margin: 0.5rem 0; }
+    .chat-msg-bubble th, .chat-msg-bubble td { border: 1px solid rgba(0,0,0,0.15); padding: 4px 8px; }
+    .typing-cursor::after { content: '▌'; animation: blink 0.8s infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+    .quick-tag {
+        display: inline-block;
+        border: 1px solid #d1d5db;
+        border-radius: 16px;
+        padding: 4px 12px;
+        font-size: 0.8rem;
+        color: #4b5563;
+        cursor: pointer;
+        transition: all .2s;
+    }
+    .quick-tag:hover { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
+    .ai-trade-row { cursor: pointer; }
+    .ai-trade-row:hover { background: #f0f4ff !important; }
 </style>
 {% endblock %}
 
@@ -355,10 +428,54 @@
     </div>
 </div>
 
+<!-- AI 交易讨论聊天侧边栏 -->
+<div class="chat-overlay" id="chatOverlay" onclick="closeChatSidebar()"></div>
+<div class="chat-sidebar" id="chatSidebar">
+    <div class="d-flex justify-content-between align-items-center p-3 border-bottom">
+        <h6 class="mb-0"><i class="bi bi-chat-dots me-2 text-primary"></i>AI 交易讨论</h6>
+        <button class="btn btn-sm btn-light" onclick="closeChatSidebar()"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <!-- 交易详情卡片 -->
+    <div class="border-bottom p-3" id="chatTradeInfo" style="background:#fafbfc;">
+        <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="fw-bold fs-5" id="chatSymbol"></span>
+            <span id="chatActionBadge"></span>
+            <span class="text-muted small ms-auto" id="chatTradeDate"></span>
+        </div>
+        <div class="d-flex gap-3 small text-muted">
+            <span>价格: <strong id="chatPrice"></strong></span>
+            <span>数量: <strong id="chatShares"></strong></span>
+            <span>金额: <strong id="chatAmount"></strong></span>
+        </div>
+        <div class="mt-1 small text-muted" id="chatReason" style="white-space:pre-wrap;"></div>
+    </div>
+    <!-- 快捷问题 -->
+    <div class="p-2 border-bottom d-flex flex-wrap gap-1" id="chatQuickTags">
+        <span class="quick-tag" onclick="sendQuickQuestion(this)">为什么选择这只股票？</span>
+        <span class="quick-tag" onclick="sendQuickQuestion(this)">这笔交易现在表现如何？</span>
+        <span class="quick-tag" onclick="sendQuickQuestion(this)">是否应该继续持有？</span>
+    </div>
+    <!-- 消息区域 -->
+    <div class="chat-messages" id="chatMessages">
+        <div class="text-center text-muted small py-3" id="chatEmpty">发送消息开始与 AI 讨论这笔交易</div>
+    </div>
+    <!-- 输入区域 -->
+    <div class="p-3 border-top">
+        <div class="input-group">
+            <input type="text" class="form-control" id="chatInput" placeholder="输入消息..." onkeydown="if(event.key==='Enter')sendTradeChat()">
+            <button class="btn btn-primary" onclick="sendTradeChat()" id="chatSendBtn">
+                <i class="bi bi-send"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
 <script>
+marked.setOptions({ breaks: true, gfm: true });
 // ── CSV Import ────────────────────────────────────────────────
 async function submitImportCSV() {
     const fileInput = document.getElementById('importFile');
@@ -438,6 +555,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Sidebar ────────────────────────────────────────────────────
 function openSidebar() {
+    closeChatSidebar();
     document.getElementById('sidebarPanel').classList.add('open');
     document.getElementById('overlay').classList.add('show');
 }
@@ -606,7 +724,7 @@ async function loadAiTradeHistory() {
             const actionBadge = isBuy
                 ? '<span class="badge bg-success">买入</span>'
                 : '<span class="badge bg-danger">卖出</span>';
-            return `<tr>
+            return `<tr class="ai-trade-row" onclick="openTradeChat(${t.id})" title="点击与AI讨论这笔交易">
                 <td class="text-nowrap">${t.trade_date || ''}</td>
                 <td><strong>${t.symbol}</strong></td>
                 <td>${actionBadge}</td>
@@ -833,6 +951,170 @@ async function deleteTrade(tradeId) {
         await loadStats();
     } catch (e) {
         alert('删除失败：' + e.message);
+    }
+}
+
+// ── AI Trade Chat Sidebar ─────────────────────────────────────
+let currentTradeId = null;
+let chatStreaming = false;
+
+function renderMd(text) {
+    if (typeof marked !== 'undefined' && typeof renderMarkdown === 'function') {
+        return renderMarkdown(text);
+    }
+    if (typeof marked !== 'undefined') {
+        return marked.parse(text || '');
+    }
+    return (text || '').replace(/\n/g, '<br>');
+}
+
+function openTradeChat(tradeId) {
+    currentTradeId = tradeId;
+    // 关闭记录交易侧边栏
+    closeSidebar();
+    // 打开聊天侧边栏
+    document.getElementById('chatSidebar').classList.add('open');
+    document.getElementById('chatOverlay').classList.add('show');
+    document.getElementById('chatMessages').innerHTML = '<div class="text-center text-muted small py-3" id="chatEmpty">加载中...</div>';
+    document.getElementById('chatInput').value = '';
+    document.getElementById('chatQuickTags').style.display = 'flex';
+    loadTradeDiscussion(tradeId);
+}
+
+function closeChatSidebar() {
+    document.getElementById('chatSidebar').classList.remove('open');
+    document.getElementById('chatOverlay').classList.remove('show');
+    currentTradeId = null;
+}
+
+async function loadTradeDiscussion(tradeId) {
+    try {
+        const res = await fetch(`/api/agent/ai_trade/${tradeId}/discussion`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+
+        const t = data.trade;
+        const isBuy = t.action === 'buy';
+        document.getElementById('chatSymbol').textContent = t.symbol;
+        document.getElementById('chatActionBadge').innerHTML = isBuy
+            ? '<span class="badge bg-success">买入</span>'
+            : '<span class="badge bg-danger">卖出</span>';
+        document.getElementById('chatTradeDate').textContent = t.trade_date || '';
+        document.getElementById('chatPrice').textContent = '$' + (t.price || 0).toFixed(2);
+        document.getElementById('chatShares').textContent = t.shares;
+        document.getElementById('chatAmount').textContent = '$' + (t.amount || 0).toLocaleString('en-US', {maximumFractionDigits: 0});
+        document.getElementById('chatReason').textContent = t.reason ? '决策原因: ' + t.reason : '';
+
+        const container = document.getElementById('chatMessages');
+        container.innerHTML = '';
+
+        if (data.messages && data.messages.length > 0) {
+            document.getElementById('chatQuickTags').style.display = 'none';
+            data.messages.forEach(m => {
+                appendTradeMsg(m.role === 'assistant' ? 'ai' : 'user', m.content);
+            });
+        } else {
+            container.innerHTML = '<div class="text-center text-muted small py-3">发送消息开始与 AI 讨论这笔交易</div>';
+        }
+    } catch (e) {
+        console.error('loadTradeDiscussion error:', e);
+        document.getElementById('chatMessages').innerHTML = '<div class="text-center text-danger small py-3">加载失败</div>';
+    }
+}
+
+function appendTradeMsg(role, content, streaming = false) {
+    const container = document.getElementById('chatMessages');
+    // 清空空提示
+    const empty = container.querySelector('#chatEmpty, .text-center.text-muted');
+    if (empty) empty.remove();
+
+    const row = document.createElement('div');
+    row.className = `chat-msg-row ${role}`;
+
+    const avatar = document.createElement('div');
+    avatar.className = `chat-msg-avatar ${role}`;
+    avatar.textContent = role === 'ai' ? 'AI' : '我';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-msg-bubble';
+    if (streaming) {
+        bubble.classList.add('typing-cursor');
+        bubble.innerHTML = '';
+    } else {
+        bubble.innerHTML = role === 'ai' ? renderMd(content) : (content || '').replace(/</g, '&lt;').replace(/\n/g, '<br>');
+    }
+
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    container.appendChild(row);
+    container.scrollTop = container.scrollHeight;
+    return bubble;
+}
+
+function sendQuickQuestion(el) {
+    const text = el.textContent.trim();
+    document.getElementById('chatInput').value = text;
+    sendTradeChat();
+}
+
+async function sendTradeChat() {
+    if (chatStreaming || !currentTradeId) return;
+    const input = document.getElementById('chatInput');
+    const msg = input.value.trim();
+    if (!msg) return;
+
+    input.value = '';
+    document.getElementById('chatQuickTags').style.display = 'none';
+    appendTradeMsg('user', msg);
+
+    const bubble = appendTradeMsg('ai', '', true);
+    chatStreaming = true;
+    const sendBtn = document.getElementById('chatSendBtn');
+    sendBtn.disabled = true;
+
+    try {
+        const res = await fetch(`/api/agent/ai_trade/${currentTradeId}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: msg })
+        });
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = '';
+        let buffer = '';
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6);
+                if (payload === '[DONE]') continue;
+                if (payload.startsWith('[ERROR]')) {
+                    accumulated += '\n\n⚠️ ' + payload;
+                    continue;
+                }
+                accumulated += payload.replace(/\\n/g, '\n');
+                bubble.innerHTML = renderMd(accumulated);
+                bubble.closest('.chat-messages').scrollTop = bubble.closest('.chat-messages').scrollHeight;
+            }
+        }
+
+        bubble.classList.remove('typing-cursor');
+        bubble.innerHTML = renderMd(accumulated);
+    } catch (e) {
+        console.error('sendTradeChat error:', e);
+        bubble.classList.remove('typing-cursor');
+        bubble.innerHTML = '<span class="text-danger">发送失败: ' + e.message + '</span>';
+    } finally {
+        chatStreaming = false;
+        sendBtn.disabled = false;
+        document.getElementById('chatInput').focus();
     }
 }
 </script>

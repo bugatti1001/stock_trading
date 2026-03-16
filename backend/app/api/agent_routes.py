@@ -306,6 +306,65 @@ def update_scorer_weights():
         return error_response(str(e), 500)
 
 
+@bp.route('/api/agent/ai_trade/<int:trade_id>/discussion', methods=['GET'])
+def ai_trade_discussion(trade_id: int):
+    """获取 AI 交易讨论历史（交易详情 + 已有对话消息）"""
+    try:
+        from app.config.database import db_session
+        from app.models.ai_trade_record import AiTradeRecord
+        from app.models.conversation import Conversation
+
+        trade = db_session.query(AiTradeRecord).get(trade_id)
+        if not trade:
+            return error_response('交易记录不存在', 404)
+
+        trade_info = {
+            'id': trade.id,
+            'symbol': trade.symbol,
+            'action': trade.action,
+            'shares': trade.shares,
+            'price': trade.price,
+            'trade_date': trade.trade_date.isoformat() if trade.trade_date else None,
+            'reason': trade.reason,
+            'amount': round(trade.shares * trade.price, 2),
+        }
+
+        conv = db_session.query(Conversation).filter_by(ai_trade_id=trade_id).first()
+        messages = []
+        if conv:
+            messages = [m.to_dict() for m in conv.messages]
+
+        return success_response(trade=trade_info, messages=messages)
+    except Exception as e:
+        logger.error(f"ai_trade_discussion 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/ai_trade/<int:trade_id>/chat', methods=['POST'])
+def ai_trade_chat(trade_id: int):
+    """AI 交易讨论流式聊天（SSE）"""
+    data = request.get_json()
+    if not data or not data.get('message'):
+        return error_response('缺少 message 字段', 400)
+
+    user_message = data['message'].strip()
+    if not user_message:
+        return error_response('消息不能为空', 400)
+
+    def generate():
+        yield from ai_agent_service.ai_trade_chat_stream(trade_id, user_message)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
+
+
 @bp.route('/api/agent/ai_provider', methods=['GET'])
 def get_ai_provider():
     """获取当前 AI 提供商设置"""

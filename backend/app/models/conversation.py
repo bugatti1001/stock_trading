@@ -7,6 +7,7 @@ from .base import BaseModel
 class ContextMode(enum.Enum):
     GLOBAL = "global"
     STOCK = "stock"
+    AI_TRADE = "ai_trade"
 
 
 class Conversation(BaseModel):
@@ -16,6 +17,7 @@ class Conversation(BaseModel):
     title = Column(String(200), nullable=False, default='新对话')
     context_mode = Column(Enum(ContextMode), default=ContextMode.GLOBAL, nullable=False)
     stock_id = Column(Integer, ForeignKey('stocks.id'), nullable=True)
+    ai_trade_id = Column(Integer, nullable=True)
     include_principles = Column(Boolean, default=False, nullable=False)
 
     messages = relationship('Message', backref='conversation', lazy='selectin',
@@ -27,6 +29,7 @@ class Conversation(BaseModel):
             'title': self.title,
             'context_mode': self.context_mode.value if self.context_mode else 'global',
             'stock_id': self.stock_id,
+            'ai_trade_id': self.ai_trade_id,
             'include_principles': bool(self.include_principles),
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,

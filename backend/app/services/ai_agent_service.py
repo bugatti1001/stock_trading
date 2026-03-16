@@ -180,8 +180,9 @@ def create_conversation(title: str = '新对话', context_mode: str = 'global',
 
 
 def get_conversations(limit: int = 50) -> List[Conversation]:
-    """获取对话列表，最新优先"""
+    """获取对话列表，最新优先（排除 AI 交易讨论对话）"""
     return (db_session.query(Conversation)
+            .filter(Conversation.context_mode != ContextMode.AI_TRADE)
             .order_by(Conversation.updated_at.desc())
             .limit(limit)
             .all())
@@ -350,6 +351,178 @@ def extract_principles(conversation_id: int) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"extract_principles 失败: {e}", exc_info=True)
         return {'error': str(e)}
+
+
+# ============================================================
+# AI 交易讨论
+# ============================================================
+
+AI_TRADE_DISCUSSION_PROMPT = """你是一名专业基金经理，管理一个模拟投资组合。用户正在询问你之前做出的一笔 AI 模拟交易的决策原因。
+
+【本次讨论的交易】
+股票: {symbol}
+操作: {action_cn}
+数量: {shares} 股
+价格: ${price}
+金额: ${amount}
+交易日期: {trade_date}
+当时的决策原因: {reason}
+
+【AI 模拟账户信息】
+总资金: ${total_capital}
+AI持仓总价值: ${ai_portfolio_value}
+AI可用现金: ${ai_available_cash}
+
+【股票池评分及AI当前持仓】
+{stocks_text}
+
+【用户投资原则】
+{principles}
+
+【近期新闻分析】
+{news}
+
+规则：
+- 解释你做出这笔交易的具体逻辑和考量依据
+- 如果用户提出质疑，坦诚分析可能的不足
+- 结合当前数据和交易时的数据变化，评估这笔交易目前的表现
+- 用中文回复，专业但易懂
+- 直接针对用户最新的问题回答，不要重述已说过的内容"""
+
+
+def _build_ai_trade_system_prompt(trade) -> str:
+    """构建 AI 交易讨论的 system prompt，复用 generate_ai_trades 的数据上下文"""
+    from app.services.stock_scorer import score_all_stocks, compute_ai_holdings
+    from app.services.news_analysis_service import build_news_analysis_summary
+    from app.models.user_setting import UserSetting
+
+    action_cn = '买入' if trade.action == 'buy' else '卖出'
+
+    # 总资金
+    try:
+        row = db_session.query(UserSetting).filter_by(key='total_capital').first()
+        total_capital = float(row.value) if row else 0
+    except Exception:
+        total_capital = 0
+
+    # AI 持仓
+    ai_holdings = compute_ai_holdings()
+
+    # 评分
+    try:
+        scored_stocks = score_all_stocks()
+    except Exception:
+        scored_stocks = []
+
+    # 价格映射
+    price_map = {}
+    for s in scored_stocks:
+        h = s.get('holding')
+        if h and h.get('current_price'):
+            price_map[s['symbol']] = h['current_price']
+        else:
+            try:
+                stock_obj = db_session.query(Stock).filter_by(symbol=s['symbol']).first()
+                if stock_obj and stock_obj.current_price:
+                    price_map[s['symbol']] = stock_obj.current_price
+            except Exception:
+                pass
+
+    ai_portfolio_value = sum(
+        ai_holdings.get(sym, {}).get('shares', 0) * price_map.get(sym, 0)
+        for sym in ai_holdings
+    )
+    ai_available_cash = max(0, total_capital - ai_portfolio_value)
+
+    # 股票行
+    def _stock_line(s):
+        price = price_map.get(s['symbol'], 0)
+        ai_h = ai_holdings.get(s['symbol'], {})
+        ai_shares = ai_h.get('shares', 0)
+        ai_cost = ai_h.get('avg_cost', 0)
+        ai_pnl = ''
+        if ai_shares > 0 and ai_cost > 0 and price > 0:
+            pnl_pct = (price - ai_cost) / ai_cost * 100
+            ai_pnl = f", AI持仓{ai_shares}股(成本${ai_cost:.2f}, 盈亏{pnl_pct:+.1f}%)"
+        elif ai_shares > 0:
+            ai_pnl = f", AI持仓{ai_shares}股"
+        return f"{s['symbol']}({s.get('stock_name', '')}): 评分{s['total_score']}, 现价${price}{ai_pnl}"
+
+    stocks_text = '\n'.join(_stock_line(s) for s in scored_stocks) if scored_stocks else '（暂无评分数据）'
+    principles = build_principles_summary()
+    news = build_news_analysis_summary()
+
+    return AI_TRADE_DISCUSSION_PROMPT.format(
+        symbol=trade.symbol,
+        action_cn=action_cn,
+        shares=trade.shares,
+        price=trade.price,
+        amount=round(trade.shares * trade.price, 2),
+        trade_date=trade.trade_date.isoformat() if trade.trade_date else '未知',
+        reason=trade.reason or '（未记录原因）',
+        total_capital=f'{total_capital:,.0f}',
+        ai_portfolio_value=f'{ai_portfolio_value:,.0f}',
+        ai_available_cash=f'{ai_available_cash:,.0f}',
+        stocks_text=stocks_text,
+        principles=principles,
+        news=news,
+    )
+
+
+def ai_trade_chat_stream(trade_id: int, user_message: str) -> Iterator[str]:
+    """AI 交易讨论流式对话，自动创建/复用与该交易绑定的对话"""
+    try:
+        from app.services.ai_client import stream_message
+        from app.models.ai_trade_record import AiTradeRecord
+
+        trade = db_session.query(AiTradeRecord).get(trade_id)
+        if not trade:
+            yield "data: [ERROR] 交易记录不存在\n\n"
+            return
+
+        # 查找或创建对话
+        conv = db_session.query(Conversation).filter_by(ai_trade_id=trade_id).first()
+        if not conv:
+            action_cn = '买入' if trade.action == 'buy' else '卖出'
+            conv = Conversation(
+                title=f'{trade.symbol} {action_cn} 讨论',
+                context_mode=ContextMode.AI_TRADE,
+                ai_trade_id=trade_id,
+                include_principles=True,
+            )
+            db_session.add(conv)
+            db_session.commit()
+
+        # 获取历史
+        history = _get_conversation_history(conv.id, limit=18)
+        history.append({'role': 'user', 'content': user_message})
+
+        # 保存用户消息
+        user_msg = Message(conversation_id=conv.id, role='user', content=user_message)
+        db_session.add(user_msg)
+        db_session.commit()
+
+        # 构建 system prompt
+        system_prompt = _build_ai_trade_system_prompt(trade)
+
+        # 流式调用 AI
+        full_response = []
+        for text in stream_message(system=system_prompt, messages=history, max_tokens=AI_MAX_TOKENS):
+            full_response.append(text)
+            escaped = text.replace('\n', '\\n')
+            yield f"data: {escaped}\n\n"
+
+        # 保存 AI 回复
+        assistant_content = ''.join(full_response)
+        assistant_msg = Message(conversation_id=conv.id, role='assistant', content=assistant_content)
+        db_session.add(assistant_msg)
+        db_session.commit()
+
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        logger.error(f"ai_trade_chat_stream 错误: {e}")
+        yield f"data: [ERROR] {str(e)}\n\n"
 
 
 def generate_dashboard_insight() -> str:
