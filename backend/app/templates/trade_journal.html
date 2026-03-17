@@ -660,8 +660,8 @@ async function loadStats() {
         const aiData = await aiRes.json();
         if (aiData.success && aiData.holdings) {
             const aiPortfolio = Object.values(aiData.holdings).reduce((sum, h) => sum + (h.market_value || 0), 0);
-            const aiCash = totalCapital - aiPortfolio;
-            const aiTotal = totalCapital;
+            const aiCash = aiData.ai_cash != null ? aiData.ai_cash : (totalCapital - aiPortfolio);
+            const aiTotal = aiPortfolio + aiCash;
             const fmt = v => '$' + v.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
             document.getElementById('statAiTotal').textContent = fmt(aiTotal);
             document.getElementById('statAiPortfolio').textContent = fmt(aiPortfolio);

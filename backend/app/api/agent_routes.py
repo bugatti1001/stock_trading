@@ -188,10 +188,11 @@ def daily_scores_ai_trades():
 def ai_holdings():
     """获取 AI 模拟持仓"""
     try:
-        from app.services.stock_scorer import compute_ai_holdings
+        from app.services.stock_scorer import compute_ai_holdings, compute_ai_cash
         from app.config.database import db_session
         from app.models.stock import Stock
         holdings = compute_ai_holdings()
+        ai_cash = compute_ai_cash()
         # 附加当前价格和市值
         result = {}
         for symbol, h in holdings.items():
@@ -203,7 +204,7 @@ def ai_holdings():
                 'current_price': price,
                 'market_value': round(h['shares'] * price, 2) if price else 0,
             }
-        return success_response(holdings=result)
+        return success_response(holdings=result, ai_cash=ai_cash)
     except Exception as e:
         logger.error(f"ai_holdings 错误: {e}")
         return error_response(str(e), 500)

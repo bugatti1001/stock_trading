@@ -667,9 +667,10 @@ def _init_ai_holdings_from_user():
 
 def compute_ai_holdings() -> Dict[str, Dict]:
     """
-    从 ai_trade_records 聚合计算 AI 的累计持仓。
+    从 ai_trade_records 聚合计算 AI 的累计持仓和现金余额。
     首次调用时自动从用户持仓初始化。
     返回 { "AAPL": {"shares": 50, "avg_cost": 150.5}, ... }
+    同时在返回的 dict 上附加 _cash 属性（通过 compute_ai_cash() 获取）。
     """
     from app.models.ai_trade_record import AiTradeRecord
 
@@ -696,6 +697,33 @@ def compute_ai_holdings() -> Dict[str, Dict]:
         sym: {'shares': h['shares'], 'avg_cost': round(h['total_cost'] / h['shares'], 4) if h['shares'] > 0 else 0}
         for sym, h in holdings.items() if h['shares'] > 0
     }
+
+
+def compute_ai_cash() -> float:
+    """
+    计算 AI 模拟账户的独立现金余额。
+    逻辑：从 total_capital 开始，逐笔扣减买入金额、加回卖出金额。
+    """
+    from app.models.ai_trade_record import AiTradeRecord
+    from app.models.user_setting import UserSetting
+
+    try:
+        row = db_session.query(UserSetting).filter_by(key='total_capital').first()
+        total_capital = float(row.value) if row else 0
+    except Exception:
+        total_capital = 0
+
+    if total_capital <= 0:
+        return 0.0
+
+    records = db_session.query(AiTradeRecord).order_by(AiTradeRecord.trade_date).all()
+    cash = total_capital
+    for r in records:
+        if r.action == 'buy':
+            cash -= r.shares * r.price
+        elif r.action == 'sell':
+            cash += r.shares * r.price
+    return round(cash, 2)
 
 
 def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
@@ -760,7 +788,7 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
         ai_holdings.get(sym, {}).get('shares', 0) * price_map.get(sym, 0)
         for sym in ai_holdings
     )
-    ai_available_cash = total_capital - ai_portfolio_value
+    ai_available_cash = compute_ai_cash()
     if ai_available_cash < 0:
         ai_available_cash = 0
 
