@@ -249,6 +249,22 @@ def analyze_trade(trade_data: Dict[str, Any]) -> Dict[str, Any]:
     from app.services.news_analysis_service import build_news_analysis_summary
     news_summary: str = build_news_analysis_summary()
 
+    # 获取 AI 模拟交易最近对该股票的操作，作为参考
+    ai_trade_ref: str = ''
+    try:
+        from app.models.ai_trade_record import AiTradeRecord
+        from sqlalchemy import desc
+        recent_ai = db_session.query(AiTradeRecord).filter(
+            AiTradeRecord.symbol == symbol,
+            AiTradeRecord.action.in_(['buy', 'sell']),
+        ).order_by(desc(AiTradeRecord.trade_date)).limit(3).all()
+        if recent_ai:
+            lines = [f"  {r.trade_date} {r.action} {r.shares}股@${r.price} — {r.reason or ''}"
+                     for r in recent_ai]
+            ai_trade_ref = '\n【AI模拟账户近期对该股票的操作】\n' + '\n'.join(lines) + '\n'
+    except Exception:
+        pass
+
     prompt: str = f"""你是一名严格遵守投资纪律的价值投资基金经理。请客观评估以下交易操作是否是一个好的投资决策。
 
 【核心投资原则 — 评估标准】
@@ -264,13 +280,14 @@ def analyze_trade(trade_data: Dict[str, Any]) -> Dict[str, Any]:
 
 【近期新闻分析】
 {news_summary}
-
+{ai_trade_ref}
 请站在基金经理的角度，客观评估这笔交易：
 1. 这笔交易是否符合投资原则（逐条对照，符合的也要说明）
 2. 基本面数据是否支持此操作（估值、盈利、财务健康、护城河）
 3. 近期新闻是否支持此操作的时机
 4. 用户理由是否合理，是否存在情绪化因素
-5. 综合判断：如果你是基金经理，你会做同样的操作吗？
+5. AI模拟账户是否做过类似操作（如果有，是否与用户操作方向一致）
+6. 综合判断：如果你是基金经理，你会做同样的操作吗？
 
 评分标准：
 - risk_score 0-30：优秀的交易决策，完全符合原则且时机合理
