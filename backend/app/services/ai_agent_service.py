@@ -249,7 +249,10 @@ def analyze_trade(trade_data: Dict[str, Any]) -> Dict[str, Any]:
     from app.services.news_analysis_service import build_news_analysis_summary
     news_summary: str = build_news_analysis_summary()
 
-    prompt: str = f"""你是一名严格的投资纪律审查官。请分析以下交易操作是否符合用户的个人投资原则。
+    prompt: str = f"""你是一名严格遵守投资纪律的价值投资基金经理。请客观评估以下交易操作是否是一个好的投资决策。
+
+【核心投资原则 — 评估标准】
+{principles_text}
 
 【本次交易】
 操作: {action_cn} {symbol}
@@ -259,19 +262,21 @@ def analyze_trade(trade_data: Dict[str, Any]) -> Dict[str, Any]:
 【持仓股票池完整数据】
 {stocks_summary}
 
-【用户个人投资原则】
-{principles_text}
-
 【近期新闻分析】
 {news_summary}
 
-请重点针对 {symbol} 这只股票，从以下角度评审：
-1. 用户理由是否包含情绪化因素（追涨杀跌、恐惧贪婪）
-2. 当前估值是否合理（PE/PB/PS 是否过高/过低，结合行业对比）
-3. 基本面是否支持此次操作（盈利质量、财务健康、护城河、资本配置等完整维度）
-4. 是否违反了用户自己声明的个人投资原则（逐条对照）
-5. 近期新闻事件是否影响此次交易决策的合理性
-6. 如果是买入，该股票在整个持仓组合中的定位是否合理
+请站在基金经理的角度，客观评估这笔交易：
+1. 这笔交易是否符合投资原则（逐条对照，符合的也要说明）
+2. 基本面数据是否支持此操作（估值、盈利、财务健康、护城河）
+3. 近期新闻是否支持此操作的时机
+4. 用户理由是否合理，是否存在情绪化因素
+5. 综合判断：如果你是基金经理，你会做同样的操作吗？
+
+评分标准：
+- risk_score 0-30：优秀的交易决策，完全符合原则且时机合理
+- risk_score 30-50：可以接受的交易，基本符合原则
+- risk_score 50-70：有一定风险，部分不符合原则或时机欠佳
+- risk_score 70-100：高风险交易，明显违反原则或基本面不支持
 
 只返回 JSON，格式如下：
 {{
