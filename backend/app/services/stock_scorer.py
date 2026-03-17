@@ -811,6 +811,8 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     principles = build_principles_summary()
 
     prompt = f"""你是一名严格遵守投资纪律的价值投资基金经理，管理一个模拟投资组合。
+你崇尚巴菲特式的耐心投资——大部分时间持仓不动，只在确信机会出现或风险暴露时才果断行动。
+如果今天没有必须交易的理由，最好的操作就是什么都不做。
 
 【核心投资原则 — 必须严格遵守，任何交易不得违反】
 {principles}
