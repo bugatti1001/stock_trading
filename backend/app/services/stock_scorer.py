@@ -751,7 +751,7 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     if today_records:
         return {
             r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
-            for r in today_records
+            for r in today_records if r.action in ('buy', 'sell')
         }
 
     # 获取总资金
@@ -856,25 +856,38 @@ AI可用现金: ${ai_available_cash:,.0f}
         trades = result.get('trades', result)
 
         # 保存 AI 交易记录到数据库
-        for symbol, trade in trades.items():
-            action = trade.get('action', '')
-            shares = int(trade.get('shares', 0))
-            if action not in ('buy', 'sell') or shares <= 0:
-                continue
-            price = price_map.get(symbol, 0)
-            if price <= 0:
-                continue
-            record = AiTradeRecord(
-                symbol=symbol,
-                action=action,
-                shares=shares,
-                price=price,
+        if not trades:
+            # AI 决定不交易 — 写入标记记录，防止重复调用
+            db_session.add(AiTradeRecord(
+                symbol='_HOLD',
+                action='hold',
+                shares=0,
+                price=0,
                 trade_date=today,
-                reason=trade.get('reason', ''),
-            )
-            db_session.add(record)
-        db_session.commit()
-        logger.info(f"[AI Trades] 保存 {len(trades)} 条 AI 交易记录")
+                reason='今日无操作：严格遵守投资原则，无符合条件的交易机会',
+            ))
+            db_session.commit()
+            logger.info("[AI Trades] AI 决定今日不交易")
+        else:
+            for symbol, trade in trades.items():
+                action = trade.get('action', '')
+                shares = int(trade.get('shares', 0))
+                if action not in ('buy', 'sell') or shares <= 0:
+                    continue
+                price = price_map.get(symbol, 0)
+                if price <= 0:
+                    continue
+                record = AiTradeRecord(
+                    symbol=symbol,
+                    action=action,
+                    shares=shares,
+                    price=price,
+                    trade_date=today,
+                    reason=trade.get('reason', ''),
+                )
+                db_session.add(record)
+            db_session.commit()
+            logger.info(f"[AI Trades] 保存 {len(trades)} 条 AI 交易记录")
 
         return trades
     except Exception as e:

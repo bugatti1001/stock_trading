@@ -723,6 +723,13 @@ async function loadAiTradeHistory() {
         document.getElementById('aiTradeTableWrap').style.display = 'block';
         const tbody = document.getElementById('aiTradeBody');
         tbody.innerHTML = data.trades.map(t => {
+            if (t.action === 'hold') {
+                return `<tr class="ai-trade-row" title="AI决定当日不操作">
+                    <td class="text-nowrap">${t.trade_date || ''}</td>
+                    <td colspan="5" class="text-center text-muted"><i class="bi bi-pause-circle me-1"></i>今日无操作</td>
+                    <td><small>${t.reason || ''}</small></td>
+                </tr>`;
+            }
             const isBuy = t.action === 'buy';
             const actionBadge = isBuy
                 ? '<span class="badge bg-success">买入</span>'
