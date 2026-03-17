@@ -284,14 +284,25 @@ def get_total_capital() -> tuple:
 
 @bp.route('/api/trades/total_capital', methods=['PUT'])
 def set_total_capital() -> tuple:
-    """设置用户总资金"""
+    """设置用户现金余额，反推初始投入资金"""
     try:
         data = request.get_json()
-        if not data or 'total_capital' not in data:
-            return error_response('缺少 total_capital 字段')
-        val = float(data['total_capital'])
-        if val < 0:
-            return error_response('总资金不能为负数')
+        if not data:
+            return error_response('缺少请求数据')
+
+        if 'cash' in data:
+            # 用户输入现金，反推 total_capital = cash + 总买入 - 总卖出
+            cash = float(data['cash'])
+            from app.models.trade_record import TradeRecord
+            trades = db_session.query(TradeRecord).all()
+            total_bought = sum(t.quantity * t.price for t in trades if t.action == 'buy')
+            total_sold = sum(t.quantity * t.price for t in trades if t.action == 'sell')
+            val = cash + total_bought - total_sold
+        elif 'total_capital' in data:
+            val = float(data['total_capital'])
+        else:
+            return error_response('缺少 cash 或 total_capital 字段')
+
         from app.models.user_setting import UserSetting
         row = db_session.query(UserSetting).filter_by(key='total_capital').first()
         if row:

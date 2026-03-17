@@ -161,9 +161,9 @@
         </div>
     </div>
     <div class="col-6 col-lg">
-        <div class="card stat-card green h-100" style="cursor:pointer" onclick="editTotalCapital()" title="点击设置初始投入资金">
+        <div class="card stat-card green h-100" style="cursor:pointer" onclick="editTotalCapital()" title="点击输入券商现金余额，自动计算总资产">
             <div class="card-body">
-                <div class="text-muted small">总资产 <i class="bi bi-pencil-square" style="font-size:0.7rem" title="点击设置初始投入资金"></i></div>
+                <div class="text-muted small">总资产 <i class="bi bi-pencil-square" style="font-size:0.7rem" title="点击输入现金余额"></i></div>
                 <div class="fs-4 fw-bold" id="statTotalCapital">—</div>
             </div>
         </div>
@@ -761,15 +761,15 @@ async function resetAiAccount() {
 
 // ── Total Capital Edit ─────────────────────────────────────────
 async function editTotalCapital() {
-    const input = prompt('请输入初始投入资金（美元）：\n\n系统会根据交易记录自动计算现金和总资产', '');
+    const input = prompt('请输入你的券商账户当前现金余额（美元）：\n\n系统将根据现金和交易记录自动计算总资产', '');
     if (input === null) return;
     const val = parseFloat(input);
-    if (isNaN(val) || val < 0) { alert('请输入有效的正数'); return; }
+    if (isNaN(val)) { alert('请输入有效的数字'); return; }
     try {
         const res = await fetch('/api/trades/total_capital', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ total_capital: val })
+            body: JSON.stringify({ cash: val })
         });
         const data = await res.json();
         if (data.success) loadStats();
