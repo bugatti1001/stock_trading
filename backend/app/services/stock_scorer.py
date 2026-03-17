@@ -797,13 +797,14 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
         ai_h = ai_holdings.get(s['symbol'], {})
         ai_shares = ai_h.get('shares', 0)
         ai_cost = ai_h.get('avg_cost', 0)
-        ai_pnl = ''
         if ai_shares > 0 and ai_cost > 0 and price > 0:
             pnl_pct = (price - ai_cost) / ai_cost * 100
-            ai_pnl = f", AI持仓{ai_shares}股(成本${ai_cost:.2f}, 盈亏{pnl_pct:+.1f}%)"
+            holding_info = f", AI持仓{ai_shares}股(成本${ai_cost:.2f}, 盈亏{pnl_pct:+.1f}%)"
         elif ai_shares > 0:
-            ai_pnl = f", AI持仓{ai_shares}股"
-        return f"{s['symbol']}({s.get('stock_name','')}): 评分{s['total_score']}, 现价${price}{ai_pnl}"
+            holding_info = f", AI持仓{ai_shares}股"
+        else:
+            holding_info = ", AI未持仓(不可卖出)"
+        return f"{s['symbol']}({s.get('stock_name','')}): 评分{s['total_score']}, 现价${price}{holding_info}"
 
     stocks_text = '\n'.join(_stock_line(s) for s in scored_stocks)
     from app.utils.ai_helpers import build_principles_summary
@@ -858,8 +859,48 @@ AI可用现金: ${ai_available_cash:,.0f}
         trades = result.get('trades', result)
 
         # 保存 AI 交易记录到数据库
-        if not trades:
-            # AI 决定不交易 — 写入标记记录，防止重复调用
+        # 校验并保存交易记录
+        valid_trades = {}
+        for symbol, trade in trades.items():
+            action = trade.get('action', '')
+            shares = int(trade.get('shares', 0))
+            if action not in ('buy', 'sell') or shares <= 0:
+                continue
+            price = price_map.get(symbol, 0)
+            if price <= 0:
+                continue
+            # 硬性校验：卖出不能超过AI实际持仓
+            if action == 'sell':
+                ai_h = ai_holdings.get(symbol, {})
+                ai_shares = ai_h.get('shares', 0)
+                if ai_shares <= 0:
+                    logger.warning(f"[AI Trades] 拒绝卖出 {symbol}：AI未持仓")
+                    continue
+                if shares > ai_shares:
+                    logger.warning(f"[AI Trades] {symbol} 卖出数量 {shares} 超过持仓 {ai_shares}，截断")
+                    shares = int(ai_shares)
+            # 硬性校验：买入不能超过可用现金
+            if action == 'buy':
+                max_shares = int(ai_available_cash / price) if price > 0 else 0
+                if shares > max_shares:
+                    logger.warning(f"[AI Trades] {symbol} 买入 {shares} 股超过现金限制，截断为 {max_shares}")
+                    shares = max_shares
+                if shares <= 0:
+                    continue
+                ai_available_cash -= shares * price  # 扣减可用现金，防止后续买入超额
+            valid_trades[symbol] = trade
+            record = AiTradeRecord(
+                symbol=symbol,
+                action=action,
+                shares=shares,
+                price=price,
+                trade_date=today,
+                reason=trade.get('reason', ''),
+            )
+            db_session.add(record)
+
+        if not valid_trades:
+            # 所有交易都被校验拒绝或AI本身返回空 — 记录hold
             db_session.add(AiTradeRecord(
                 symbol='_HOLD',
                 action='hold',
@@ -868,28 +909,11 @@ AI可用现金: ${ai_available_cash:,.0f}
                 trade_date=today,
                 reason='今日无操作：严格遵守投资原则，无符合条件的交易机会',
             ))
-            db_session.commit()
             logger.info("[AI Trades] AI 决定今日不交易")
-        else:
-            for symbol, trade in trades.items():
-                action = trade.get('action', '')
-                shares = int(trade.get('shares', 0))
-                if action not in ('buy', 'sell') or shares <= 0:
-                    continue
-                price = price_map.get(symbol, 0)
-                if price <= 0:
-                    continue
-                record = AiTradeRecord(
-                    symbol=symbol,
-                    action=action,
-                    shares=shares,
-                    price=price,
-                    trade_date=today,
-                    reason=trade.get('reason', ''),
-                )
-                db_session.add(record)
-            db_session.commit()
-            logger.info(f"[AI Trades] 保存 {len(trades)} 条 AI 交易记录")
+
+        db_session.commit()
+        if valid_trades:
+            logger.info(f"[AI Trades] 保存 {len(valid_trades)} 条 AI 交易记录")
 
         return trades
     except Exception as e:
