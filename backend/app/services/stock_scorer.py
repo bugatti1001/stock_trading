@@ -863,7 +863,11 @@ AI可用现金: ${ai_available_cash:,.0f}
         valid_trades = {}
         for symbol, trade in trades.items():
             action = trade.get('action', '')
-            shares = int(trade.get('shares', 0))
+            raw_shares = trade.get('shares', 0)
+            try:
+                shares = float(raw_shares)
+            except (ValueError, TypeError):
+                continue
             if action not in ('buy', 'sell') or shares <= 0:
                 continue
             price = price_map.get(symbol, 0)
@@ -876,9 +880,9 @@ AI可用现金: ${ai_available_cash:,.0f}
                 if ai_shares <= 0:
                     logger.warning(f"[AI Trades] 拒绝卖出 {symbol}：AI未持仓")
                     continue
-                if shares > ai_shares:
-                    logger.warning(f"[AI Trades] {symbol} 卖出数量 {shares} 超过持仓 {ai_shares}，截断")
-                    shares = int(ai_shares)
+                if shares >= ai_shares:
+                    # 清仓：卖出全部持仓（含小数股）
+                    shares = ai_shares
             # 硬性校验：买入不能超过可用现金
             if action == 'buy':
                 max_shares = int(ai_available_cash / price) if price > 0 else 0
