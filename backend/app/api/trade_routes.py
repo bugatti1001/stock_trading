@@ -269,12 +269,14 @@ def portfolio() -> tuple:
 
 @bp.route('/api/trades/total_capital', methods=['GET'])
 def get_total_capital() -> tuple:
-    """获取用户设定的总资金"""
+    """获取用户设定的初始资金和当前现金余额"""
     try:
         from app.models.user_setting import UserSetting
+        from app.services.portfolio_service import compute_user_cash
         row = db_session.query(UserSetting).filter_by(key='total_capital').first()
         value = float(row.value) if row else 0
-        return success_response(total_capital=value)
+        user_cash = compute_user_cash() if value > 0 else 0
+        return success_response(total_capital=value, user_cash=user_cash)
     except Exception as e:
         logger.error(f"get_total_capital 错误: {e}")
         return error_response(str(e), status_code=500)

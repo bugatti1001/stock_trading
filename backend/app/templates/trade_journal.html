@@ -161,9 +161,9 @@
         </div>
     </div>
     <div class="col-6 col-lg">
-        <div class="card stat-card green h-100" style="cursor:pointer" onclick="editTotalCapital()" title="点击设置总资金">
+        <div class="card stat-card green h-100" style="cursor:pointer" onclick="editTotalCapital()" title="点击设置初始投入资金">
             <div class="card-body">
-                <div class="text-muted small">总资金 <i class="bi bi-pencil-square" style="font-size:0.7rem"></i></div>
+                <div class="text-muted small">总资产 <i class="bi bi-pencil-square" style="font-size:0.7rem" title="点击设置初始投入资金"></i></div>
                 <div class="fs-4 fw-bold" id="statTotalCapital">—</div>
             </div>
         </div>
@@ -626,16 +626,16 @@ function filterTrades() {
 // ── Stats ──────────────────────────────────────────────────────
 async function loadStats() {
     let totalCapital = 0;
+    let userCash = 0;
     let portfolioValue = 0;
-    // 加载总资金
+    const fmt = v => '$' + v.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+    // 加载初始资金 + 真实现金
     try {
         const cRes = await fetch('/api/trades/total_capital');
         const cData = await cRes.json();
         if (cData.success) {
             totalCapital = cData.total_capital || 0;
-            document.getElementById('statTotalCapital').textContent = totalCapital > 0
-                ? '$' + totalCapital.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})
-                : '点击设置';
+            userCash = cData.user_cash != null ? cData.user_cash : 0;
         }
     } catch (e) { console.error('total_capital load error:', e); }
     // 加载持仓价值
@@ -644,15 +644,18 @@ async function loadStats() {
         const pData = await pRes.json();
         if (pData.success && pData.holdings) {
             portfolioValue = pData.holdings.reduce((sum, h) => sum + (h.market_value || 0), 0);
-            document.getElementById('statPortfolioValue').textContent = '$' + portfolioValue.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+            document.getElementById('statPortfolioValue').textContent = fmt(portfolioValue);
         }
     } catch (e) { console.error('portfolio load error:', e); }
-    // 计算可用现金
+    // 显示总资产（持仓+现金）和可用现金
     if (totalCapital > 0) {
-        const cash = totalCapital - portfolioValue;
+        const totalAsset = portfolioValue + userCash;
+        document.getElementById('statTotalCapital').textContent = fmt(totalAsset);
         const el = document.getElementById('statAvailableCash');
-        el.textContent = '$' + cash.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
-        el.className = 'fs-4 fw-bold' + (cash < 0 ? ' text-danger' : '');
+        el.textContent = fmt(userCash);
+        el.className = 'fs-4 fw-bold' + (userCash < 0 ? ' text-danger' : '');
+    } else {
+        document.getElementById('statTotalCapital').textContent = '点击设置';
     }
     // 加载 AI 持仓统计
     try {
@@ -758,7 +761,7 @@ async function resetAiAccount() {
 
 // ── Total Capital Edit ─────────────────────────────────────────
 async function editTotalCapital() {
-    const input = prompt('请输入总资金（美元）：', '');
+    const input = prompt('请输入初始投入资金（美元）：\n\n系统会根据交易记录自动计算现金和总资产', '');
     if (input === null) return;
     const val = parseFloat(input);
     if (isNaN(val) || val < 0) { alert('请输入有效的正数'); return; }

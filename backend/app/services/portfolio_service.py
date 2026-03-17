@@ -132,6 +132,32 @@ def get_holding_for_symbol(symbol: str) -> Optional[Dict]:
     return None
 
 
+def compute_user_cash() -> float:
+    """
+    计算用户的真实现金余额。
+    从 total_capital（初始投入）出发，逐笔扣减买入金额、加回卖出金额。
+    """
+    from app.models.user_setting import UserSetting
+
+    try:
+        row = db_session.query(UserSetting).filter_by(key='total_capital').first()
+        total_capital = float(row.value) if row else 0
+    except Exception:
+        total_capital = 0
+
+    if total_capital <= 0:
+        return 0.0
+
+    trades = db_session.query(TradeRecord).all()
+    cash = total_capital
+    for t in trades:
+        if t.action == 'buy':
+            cash -= t.quantity * t.price
+        elif t.action == 'sell':
+            cash += t.quantity * t.price
+    return round(cash, 2)
+
+
 def invalidate_portfolio_cache():
     """持仓缓存失效（交易变动后调用）"""
     cache.invalidate_prefix('portfolio_holdings')
