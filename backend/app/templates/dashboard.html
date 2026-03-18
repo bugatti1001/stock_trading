@@ -16,6 +16,11 @@
     .score-high   { background: #d1fae5; color: #065f46; }
     .score-mid    { background: #fef3c7; color: #92400e; }
     .score-low    { background: #fee2e2; color: #991b1b; }
+    .mos-pos-high { color: #059669; font-weight: 700; }
+    .mos-pos      { color: #059669; font-weight: 600; }
+    .mos-fair     { color: #6b7280; }
+    .mos-neg      { color: #dc2626; font-weight: 600; }
+    .mos-neg-high { color: #dc2626; font-weight: 700; }
     .action-badge {
         display: inline-block;
         padding: 2px 10px;
@@ -174,6 +179,9 @@
                     <i class="bi bi-trophy text-primary"></i> 每日交易建议
                 </h5>
                 <div class="d-flex gap-1">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="openValuationModal()" title="估值参数设置">
+                        <i class="bi bi-calculator"></i>
+                    </button>
                     <button class="btn btn-sm btn-outline-secondary" onclick="openWeightModal()" title="评分权重设置">
                         <i class="bi bi-gear"></i>
                     </button>
@@ -207,13 +215,15 @@
                             <th>持仓</th>
                             <th>盈亏</th>
                             <th>评分</th>
-                            <th>维度 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
-                                title="5 个评分维度（悬停色条查看详情）:&#10;&#10;估值 — PE/PB/PS/股息率，越低越好&#10;盈利 — 连续盈利/利润率/现金流质量&#10;健康 — 净现金/负债率/流动性&#10;护城 — 毛利率水平与趋势/市场份额&#10;新闻 — 当日AI新闻情绪分析"></i></th>
+                            <th>内在价值 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
+                                title="基于DCF/EPV/Graham等多种方法的综合估值"></i></th>
+                            <th>安全边际 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
+                                title="(内在价值-现价)/内在价值&#10;正数=低估（买入机会）&#10;负数=高估（谨慎）"></i></th>
+                            <th>维度</th>
                             <th>建议</th>
-                            <th>用户持仓</th>
                             <th>AI持仓</th>
                             <th>AI交易 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
-                                title="AI 根据可用现金、投资原则和新闻&#10;给出的具体买卖数量建议&#10;（需先在交易日记设置总资金）"></i></th>
+                                title="AI 根据估值、投资原则和新闻&#10;给出的具体买卖数量建议&#10;（需先在交易日记设置总资金）"></i></th>
                         </tr>
                     </thead>
                     <tbody id="scoreTableBody"></tbody>
@@ -281,6 +291,26 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetWeights()">恢复默认</button>
                 <button type="button" class="btn btn-sm btn-primary" onclick="saveWeights()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 估值参数设置 Modal -->
+<div class="modal fade" id="valuationModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title"><i class="bi bi-calculator me-1"></i>估值参数设置</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="valuationModalBody">
+                <p class="text-muted small mb-3">调整内在价值估算的核心参数</p>
+                <div id="valuationSliders"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetValuationParams()">恢复默认</button>
+                <button type="button" class="btn btn-sm btn-primary" onclick="saveValuationParams()">保存</button>
             </div>
         </div>
     </div>
@@ -404,7 +434,7 @@ function renderScoreTable(scores) {
     tbody.innerHTML = '';
 
     if (!scores || scores.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">股票池暂无数据</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">股票池暂无数据</td></tr>';
         document.getElementById('scoreTable').style.display = 'table';
         return;
     }
@@ -442,10 +472,28 @@ function renderScoreTable(scores) {
         dimKeys.forEach(dk => { dimBars += `<span>${dimShort[dk]}</span>`; });
         dimBars += '</div>';
 
-        // 用户持仓价值列
-        let userValueCell = '<span class="text-muted">-</span>';
-        if (h && h.market_value) {
-            userValueCell = `<span class="fw-semibold">$${h.market_value.toLocaleString('en-US', {maximumFractionDigits: 0})}</span>`;
+        // 内在价值列
+        let ivCell = '<span class="text-muted">-</span>';
+        const iv = s.intrinsic_value;
+        if (iv != null) {
+            ivCell = `<span class="fw-semibold">$${iv.toLocaleString('en-US', {maximumFractionDigits: 0})}</span>`;
+            if (s.current_price) {
+                ivCell += `<br><small class="text-muted">现价$${s.current_price.toLocaleString('en-US', {maximumFractionDigits: 0})}</small>`;
+            }
+        }
+
+        // 安全边际列
+        let mosCell = '<span class="text-muted">-</span>';
+        const mos = s.margin_of_safety;
+        if (mos && mos.pct != null) {
+            let mosClass = 'mos-fair';
+            if (mos.pct >= 25) mosClass = 'mos-pos-high';
+            else if (mos.pct >= 10) mosClass = 'mos-pos';
+            else if (mos.pct >= -10) mosClass = 'mos-fair';
+            else if (mos.pct >= -20) mosClass = 'mos-neg';
+            else mosClass = 'mos-neg-high';
+            mosCell = `<span class="${mosClass}">${mos.pct >= 0 ? '+' : ''}${mos.pct.toFixed(0)}%</span>`;
+            mosCell += `<br><small class="text-muted">${mos.signal_label || ''}</small>`;
         }
 
         // AI 持仓价值列
@@ -477,16 +525,26 @@ function renderScoreTable(scores) {
                 <i class="bi bi-${icon}"></i> ${label} ${aiTrade.shares}股</span>`;
         }
 
+        // 标签徽章
+        const tags = (s.tags || []).map(t => {
+            const isAI = t.includes('AI');
+            const color = isAI ? 'bg-info' : 'bg-warning';
+            return `<span class="badge ${color} me-1" style="font-size:.6em;font-weight:500">${t}</span>`;
+        }).join('');
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td><a href="/stocks/${s.symbol}" class="fw-bold text-decoration-none">${s.symbol}</a>
-                <br><small class="text-muted">${(s.stock_name || '').substring(0,10)}</small></td>
+                <br><small class="text-muted">${(s.stock_name || '').substring(0,10)}</small>
+                ${tags ? '<br>' + tags : ''}
+                ${h ? `<br><small class="text-muted">${h.net_shares}股 <span class="${(h.unrealized_pnl_pct||0) >= 0 ? 'pnl-pos' : 'pnl-neg'}">${(h.unrealized_pnl_pct||0) >= 0 ? '+' : ''}${(h.unrealized_pnl_pct||0).toFixed(1)}%</span></small>` : ''}</td>
             <td>${sharesText}</td>
             <td>${pnlText}</td>
             <td><span class="score-badge ${scoreClass(s.total_score)}">${s.total_score}</span></td>
+            <td>${ivCell}</td>
+            <td>${mosCell}</td>
             <td>${dimBars}</td>
             <td><span class="action-badge ${actionClass(s.action)}">${s.action_emoji} ${s.action_label}</span></td>
-            <td>${userValueCell}</td>
             <td>${aiValueCell}</td>
             <td>${aiTradeCell}</td>
         `;
@@ -638,6 +696,84 @@ function saveWeights() {
         if (data.success) {
             bootstrap.Modal.getInstance(document.getElementById('weightModal')).hide();
             // 清除缓存并重新加载评分
+            localStorage.removeItem(SCORE_CACHE_KEY);
+            loadDailyScores();
+        }
+    });
+}
+
+/* ===== 估值参数设置 ===== */
+let currentValParams = {};
+let defaultValParams = {};
+let valParamLabels = {};
+let valParamValidation = {};
+
+function openValuationModal() {
+    fetch('/api/agent/valuation_params')
+        .then(r => r.json())
+        .then(data => {
+            currentValParams = data.params || {};
+            defaultValParams = data.defaults || {};
+            valParamLabels = data.labels || {};
+            valParamValidation = data.validation || {};
+            renderValuationSliders();
+            new bootstrap.Modal(document.getElementById('valuationModal')).show();
+        })
+        .catch(e => { console.error('load valuation params error:', e); });
+}
+
+function renderValuationSliders() {
+    const container = document.getElementById('valuationSliders');
+    container.innerHTML = '';
+    const keys = Object.keys(defaultValParams);
+    keys.forEach(k => {
+        const val = currentValParams[k] != null ? currentValParams[k] : defaultValParams[k];
+        const rules = valParamValidation[k] || {};
+        const label = valParamLabels[k] || k;
+        const isPercent = ['discount_rate','terminal_growth_rate','growth_cap','bond_yield','margin_of_safety','sell_overvaluation_pct','ai_growth_premium','geo_risk_premium'].includes(k);
+        const isInt = rules.type === 'int' || k === 'dcf_projection_years' || k === 'quality_score_min';
+        const displayVal = isPercent ? (val * 100).toFixed(0) + '%' : (isInt ? Math.round(val) : val.toFixed(2));
+        const sliderMin = isPercent ? Math.round(rules.min * 100) : (rules.min || 0);
+        const sliderMax = isPercent ? Math.round(rules.max * 100) : (rules.max || 100);
+        const sliderVal = isPercent ? Math.round(val * 100) : (isInt ? Math.round(val) : val);
+        const div = document.createElement('div');
+        div.className = 'mb-3';
+        div.innerHTML = `
+            <div class="d-flex justify-content-between weight-slider-label">
+                <span>${label}</span>
+                <span id="vval_${k}">${displayVal}</span>
+            </div>
+            <input type="range" class="form-range" min="${sliderMin}" max="${sliderMax}" value="${sliderVal}" step="1"
+                   id="vslider_${k}" oninput="onValParamChange('${k}', this.value)">
+        `;
+        container.appendChild(div);
+    });
+}
+
+function onValParamChange(key, rawVal) {
+    const isPercent = ['discount_rate','terminal_growth_rate','growth_cap','bond_yield','margin_of_safety','sell_overvaluation_pct','ai_growth_premium','geo_risk_premium'].includes(key);
+    const isInt = key === 'dcf_projection_years' || key === 'quality_score_min';
+    const val = parseInt(rawVal);
+    currentValParams[key] = isPercent ? val / 100 : val;
+    const display = isPercent ? val + '%' : (isInt ? val : (val / 100).toFixed(2));
+    document.getElementById('vval_' + key).textContent = display;
+}
+
+function resetValuationParams() {
+    currentValParams = {...defaultValParams};
+    renderValuationSliders();
+}
+
+function saveValuationParams() {
+    fetch('/api/agent/valuation_params', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({params: currentValParams})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('valuationModal')).hide();
             localStorage.removeItem(SCORE_CACHE_KEY);
             loadDailyScores();
         }

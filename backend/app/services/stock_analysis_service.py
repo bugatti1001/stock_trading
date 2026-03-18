@@ -542,6 +542,9 @@ def build_stock_text_summary(stock: Stock, fins: List[FinancialData]) -> str:
     if kpi_lines:
         lines.append("衍生KPI: " + " | ".join(kpi_lines))
 
+    # 注：内在价值估算模块仍在迭代中，暂不纳入 AI 对话上下文
+    # 避免不成熟的估值数据误导 AI 决策
+
     return "\n".join(lines)
 
 

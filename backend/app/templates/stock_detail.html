@@ -134,6 +134,31 @@
 </div>
 {% endif %}
 
+<!-- 估值分析 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0"><i class="bi bi-calculator text-primary"></i> 内在价值估算</h5>
+                <button class="btn btn-sm btn-outline-primary" onclick="loadValuation()" id="valRefreshBtn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>计算估值
+                </button>
+            </div>
+            <div class="card-body" id="valuationBody">
+                <div id="valPlaceholder" class="text-center py-3">
+                    <p class="text-muted mb-0">点击"计算估值"查看基于DCF/EPV/Graham等方法的内在价值分析</p>
+                </div>
+                <div id="valLoading" style="display:none" class="text-center py-3">
+                    <div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>
+                    <span class="text-muted">正在计算...</span>
+                </div>
+                <div id="valResult" style="display:none"></div>
+                <div id="valError" style="display:none" class="text-danger text-center py-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- 财务趋势图表 -->
 {% if financials and financials|length > 1 %}
 <div class="row mb-4">
@@ -430,5 +455,121 @@ new Chart(ratiosCtx, {
     }
 });
 {% endif %}
+
+/* ===== 估值分析 ===== */
+async function loadValuation() {
+    document.getElementById('valPlaceholder').style.display = 'none';
+    document.getElementById('valLoading').style.display = 'block';
+    document.getElementById('valResult').style.display = 'none';
+    document.getElementById('valError').style.display = 'none';
+    const btn = document.getElementById('valRefreshBtn');
+    if (btn) btn.disabled = true;
+
+    try {
+        const res = await fetch('/api/agent/valuations/{{ stock.symbol }}');
+        const data = await res.json();
+        document.getElementById('valLoading').style.display = 'none';
+        if (btn) btn.disabled = false;
+
+        if (data.success && data.valuation) {
+            renderValuation(data.valuation);
+        } else {
+            document.getElementById('valError').textContent = data.error || '估值计算失败';
+            document.getElementById('valError').style.display = 'block';
+        }
+    } catch (e) {
+        document.getElementById('valLoading').style.display = 'none';
+        if (btn) btn.disabled = false;
+        document.getElementById('valError').textContent = '网络错误: ' + e.message;
+        document.getElementById('valError').style.display = 'block';
+    }
+}
+
+function renderValuation(val) {
+    const container = document.getElementById('valResult');
+    const composite = val.composite || {};
+    const mos = val.margin_of_safety || {};
+    const methods = val.methods || {};
+    const growth = val.growth_estimate || {};
+
+    let mosColor = '#6b7280';
+    if (mos.pct != null) {
+        if (mos.pct >= 25) mosColor = '#059669';
+        else if (mos.pct >= 10) mosColor = '#10b981';
+        else if (mos.pct >= -10) mosColor = '#6b7280';
+        else if (mos.pct >= -20) mosColor = '#f59e0b';
+        else mosColor = '#dc2626';
+    }
+
+    let html = '';
+
+    // 综合估值摘要
+    if (composite.intrinsic_value != null) {
+        html += `<div class="row mb-3">
+            <div class="col-md-3 text-center">
+                <h6 class="text-muted mb-1">综合内在价值</h6>
+                <h3 class="mb-0 text-primary">$${composite.intrinsic_value.toLocaleString('en-US', {maximumFractionDigits: 0})}</h3>
+                <small class="text-muted">基于 ${composite.method_count} 种方法</small>
+            </div>
+            <div class="col-md-3 text-center">
+                <h6 class="text-muted mb-1">当前价格</h6>
+                <h3 class="mb-0">$${(val.current_price || 0).toLocaleString('en-US', {maximumFractionDigits: 2})}</h3>
+            </div>
+            <div class="col-md-3 text-center">
+                <h6 class="text-muted mb-1">安全边际</h6>
+                <h3 class="mb-0" style="color:${mosColor}">${mos.pct != null ? (mos.pct >= 0 ? '+' : '') + mos.pct.toFixed(1) + '%' : '-'}</h3>
+                <small style="color:${mosColor}">${mos.signal_emoji || ''} ${mos.signal_label || ''}</small>
+            </div>
+            <div class="col-md-3 text-center">
+                <h6 class="text-muted mb-1">公司类型</h6>
+                <h5 class="mb-0"><span class="badge bg-secondary">${val.company_type_label || '成熟型'}</span></h5>
+                <small class="text-muted">预期增长率: ${growth.used_rate != null ? (growth.used_rate * 100).toFixed(1) + '%' : '-'}</small>
+                ${(val.tags || []).length > 0 ? '<br>' + val.tags.map(t => {
+                    const isAI = t.includes('AI');
+                    return `<span class="badge ${isAI ? 'bg-info' : 'bg-warning'} mt-1">${t}</span>`;
+                }).join(' ') : ''}
+            </div>
+        </div>`;
+
+        if (composite.range_low != null && composite.range_high != null) {
+            html += `<p class="text-muted small mb-3">估值区间: $${composite.range_low.toLocaleString()} ~ $${composite.range_high.toLocaleString()}</p>`;
+        }
+    } else {
+        html += '<p class="text-muted">财务数据不足，无法完成估值</p>';
+    }
+
+    // 各方法详情表
+    const methodList = Object.entries(methods).filter(([k, v]) => v != null);
+    if (methodList.length > 0) {
+        html += `<h6 class="mt-3 mb-2">估值方法明细</h6>
+        <div class="table-responsive"><table class="table table-sm table-bordered">
+            <thead class="table-light"><tr>
+                <th>方法</th><th>每股价值</th><th>权重</th><th>置信度</th><th>关键假设</th><th>警告</th>
+            </tr></thead><tbody>`;
+
+        const weightsUsed = composite.weights_used || {};
+        methodList.forEach(([key, m]) => {
+            const w = weightsUsed[key];
+            const wStr = w != null ? (w * 100).toFixed(0) + '%' : '-';
+            const confBadge = m.confidence === 'high' ? 'success' : (m.confidence === 'medium' ? 'warning' : 'secondary');
+            const confLabel = m.confidence === 'high' ? '高' : (m.confidence === 'medium' ? '中' : '低');
+            const assumptions = Object.entries(m.assumptions || {}).map(([ak, av]) => `${ak}: ${av}`).join(', ');
+            const warnings = (m.warnings || []).join('; ') || '-';
+            html += `<tr>
+                <td class="fw-semibold">${m.method_cn || m.method}</td>
+                <td class="fw-bold">$${m.intrinsic_value.toLocaleString('en-US', {maximumFractionDigits: 0})}</td>
+                <td>${wStr}</td>
+                <td><span class="badge bg-${confBadge}">${confLabel}</span></td>
+                <td><small class="text-muted">${assumptions}</small></td>
+                <td><small class="text-muted">${warnings}</small></td>
+            </tr>`;
+        });
+
+        html += '</tbody></table></div>';
+    }
+
+    container.innerHTML = html;
+    container.style.display = 'block';
+}
 </script>
 {% endblock %}

@@ -148,10 +148,28 @@ def dashboard_insight():
 
 @bp.route('/api/agent/daily_scores', methods=['GET'])
 def daily_scores():
-    """获取股票池评分推荐列表"""
+    """获取股票池评分列表（评分决策不依赖估值，估值仅供展示参考）"""
     try:
         from app.services.stock_scorer import score_all_stocks
         scores = score_all_stocks()
+        # 估值数据仅供前端展示参考，不参与交易决策
+        try:
+            from app.services.valuation_service import valuate_all_stocks, get_valuation_params
+            params = get_valuation_params()
+            vals = {v['symbol']: v for v in valuate_all_stocks(params)}
+            for s in scores:
+                val = vals.get(s['symbol'])
+                if val:
+                    s['intrinsic_value'] = val['composite'].get('intrinsic_value')
+                    s['margin_of_safety'] = val['margin_of_safety']
+                    s['tags'] = val.get('tags', [])
+                else:
+                    s['intrinsic_value'] = None
+                    s['margin_of_safety'] = {'pct': None, 'signal': 'unknown',
+                                              'signal_label': '无法估值', 'signal_emoji': '⚫'}
+                    s['tags'] = []
+        except Exception as e:
+            logger.debug(f"估值附加失败(不影响评分): {e}")
         return success_response(scores=scores)
     except Exception as e:
         logger.error(f"daily_scores 错误: {e}")
@@ -173,7 +191,7 @@ def daily_scores_ai_reasoning():
 
 @bp.route('/api/agent/daily_scores/ai_trades', methods=['POST'])
 def daily_scores_ai_trades():
-    """AI 根据可用现金、投资原则和新闻给出具体买卖数量建议"""
+    """AI 根据可用现金、投资原则和新闻给出具体买卖数量建议（不依赖估值模型）"""
     try:
         from app.services.stock_scorer import score_all_stocks, generate_ai_trades
         scores = score_all_stocks()
@@ -365,6 +383,93 @@ def ai_trade_chat(trade_id: int):
         }
     )
 
+
+# ============================================================
+# 内在价值估算
+# ============================================================
+
+@bp.route('/api/agent/valuations', methods=['GET'])
+def stock_valuations():
+    """获取股票池所有股票的内在价值估算"""
+    try:
+        from app.services.valuation_service import valuate_all_stocks, get_valuation_params
+        params = get_valuation_params()
+        valuations = valuate_all_stocks(params)
+        return success_response(valuations=valuations, params=params)
+    except Exception as e:
+        logger.error(f"stock_valuations 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/valuations/<symbol>', methods=['GET'])
+def stock_valuation_detail(symbol: str):
+    """获取单只股票的详细估值"""
+    try:
+        from app.config.database import db_session
+        from app.models.stock import Stock
+        from app.models.financial_data import FinancialData, ReportPeriod
+        from app.services.valuation_service import valuate_stock, get_valuation_params
+        from sqlalchemy import desc
+
+        stock = db_session.query(Stock).filter_by(symbol=symbol.upper()).first()
+        if not stock:
+            return error_response(f'股票 {symbol} 不存在', 404)
+
+        fins = db_session.query(FinancialData).filter_by(
+            stock_id=stock.id, period=ReportPeriod.ANNUAL
+        ).order_by(desc(FinancialData.fiscal_year)).limit(3).all()
+
+        params = get_valuation_params()
+        valuation = valuate_stock(stock, fins, params)
+        return success_response(valuation=valuation, params=params)
+    except Exception as e:
+        logger.error(f"stock_valuation_detail 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/valuation_params', methods=['GET'])
+def get_valuation_params_api():
+    """获取当前估值参数"""
+    try:
+        from app.services.valuation_service import (
+            get_valuation_params, DEFAULT_VALUATION_PARAMS, PARAM_LABELS, PARAM_VALIDATION
+        )
+        params = get_valuation_params()
+        # Convert type objects to strings for JSON serialization
+        validation = {
+            k: {**v, 'type': v['type'].__name__}
+            for k, v in PARAM_VALIDATION.items()
+        }
+        return success_response(
+            params=params,
+            defaults=DEFAULT_VALUATION_PARAMS,
+            labels=PARAM_LABELS,
+            validation=validation,
+        )
+    except Exception as e:
+        logger.error(f"get_valuation_params 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/valuation_params', methods=['PUT'])
+def update_valuation_params():
+    """更新估值参数"""
+    try:
+        data = request.get_json()
+        if not data or 'params' not in data:
+            return error_response('缺少 params 字段', 400)
+
+        from app.services.valuation_service import save_valuation_params
+        saved = save_valuation_params(data['params'])
+        return success_response(params=saved)
+    except Exception as e:
+        logger.error(f"update_valuation_params 错误: {e}")
+        return error_response(str(e), 500)
+
+
+# ============================================================
+# AI 提供商
+# ============================================================
 
 @bp.route('/api/agent/ai_provider', methods=['GET'])
 def get_ai_provider():

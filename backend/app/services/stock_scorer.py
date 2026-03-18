@@ -446,7 +446,7 @@ def _score_news_sentiment(symbol: str) -> Dict[str, Any]:
 
 def _determine_action(total_score: float, holding: Optional[Dict]) -> Dict[str, str]:
     """
-    根据总分和持仓状态生成操作建议
+    根据总分和持仓状态生成操作建议（旧版，纯评分驱动）
 
     Returns:
         {'action': 'buy|add|hold|reduce|sell', 'action_label': '中文标签', 'action_emoji': emoji}
@@ -467,6 +467,66 @@ def _determine_action(total_score: float, holding: Optional[Dict]) -> Dict[str, 
         if has_position:
             return {'action': 'sell', 'action_label': '卖出', 'action_emoji': '🔴'}
         return {'action': 'avoid', 'action_label': '回避', 'action_emoji': '🔴'}
+
+
+def _determine_action_v2(
+    quality_score: float,
+    margin_of_safety: Optional[Dict],
+    holding: Optional[Dict],
+    valuation_params: Optional[Dict] = None,
+) -> Dict[str, str]:
+    """
+    质量+估值双维度决策（新版）
+
+    决策矩阵：
+      好公司+好价格 → 买入
+      好公司+贵了 → 观望
+      差公司+任何价格 → 卖出/回避
+      严重高估 → 减仓
+    """
+    from app.services.valuation_service import DEFAULT_VALUATION_PARAMS
+
+    params = valuation_params or DEFAULT_VALUATION_PARAMS
+    has_position = holding is not None and holding.get('net_shares', 0) > 0
+    mos_pct = (margin_of_safety or {}).get('pct')
+    intrinsic_value = (margin_of_safety or {}).get('pct') is not None
+
+    quality_min = params.get('quality_score_min', 60)
+    mos_threshold = params.get('margin_of_safety', 0.25) * 100
+    sell_overval = params.get('sell_overvaluation_pct', 0.20) * 100
+
+    # 无法估值时回退到旧逻辑
+    if mos_pct is None:
+        return _determine_action(quality_score, holding)
+
+    # 差公司：质量评分过低
+    if quality_score < 40:
+        if has_position:
+            return {'action': 'sell', 'action_label': '卖出(质量不足)', 'action_emoji': '🔴'}
+        return {'action': 'avoid', 'action_label': '回避', 'action_emoji': '🔴'}
+
+    # 好公司+好价格：高质量 + 深度低估
+    if quality_score >= 75 and mos_pct >= mos_threshold:
+        if has_position:
+            return {'action': 'add', 'action_label': '加仓', 'action_emoji': '🟢'}
+        return {'action': 'buy', 'action_label': '买入', 'action_emoji': '🟢'}
+
+    # 合格公司+有安全边际
+    if quality_score >= quality_min and mos_pct >= mos_threshold * 0.6:
+        if has_position:
+            return {'action': 'add', 'action_label': '小幅加仓', 'action_emoji': '🟢'}
+        return {'action': 'buy', 'action_label': '建仓', 'action_emoji': '🟢'}
+
+    # 严重高估：持仓减仓，非持仓回避
+    if mos_pct < -sell_overval:
+        if has_position:
+            return {'action': 'reduce', 'action_label': '减仓(估值偏高)', 'action_emoji': '🟡'}
+        return {'action': 'avoid', 'action_label': '观望(估值偏高)', 'action_emoji': '⚪'}
+
+    # 其他情况：持有/观望
+    if has_position:
+        return {'action': 'hold', 'action_label': '持有', 'action_emoji': '⚪'}
+    return {'action': 'hold', 'action_label': '观望', 'action_emoji': '⚪'}
 
 
 # ════════════════════════════════════════════════════════════════
@@ -565,6 +625,77 @@ def score_all_stocks(weights: Optional[Dict[str, float]] = None) -> List[Dict]:
     return results
 
 
+def score_and_valuate_all_stocks(
+    weights: Optional[Dict[str, float]] = None,
+) -> List[Dict]:
+    """
+    评分 + 估值一体化：对股票池所有股票进行质量评分和内在价值估值
+    返回包含估值数据的评分列表，使用 _determine_action_v2 双维度决策
+    """
+    if weights is None:
+        weights = get_user_weights()
+
+    stocks = db_session.query(Stock).filter_by(in_pool=True, is_active=True).all()
+    if not stocks:
+        return []
+
+    stock_ids = [s.id for s in stocks]
+    fins_map = batch_load_recent_financials(stock_ids, limit=3)
+
+    from app.services.portfolio_service import compute_holdings
+    holdings = compute_holdings()
+    holdings_map = {h['symbol']: h for h in holdings}
+
+    from app.services.valuation_service import valuate_stock, get_valuation_params
+    valuation_params = get_valuation_params()
+
+    results = []
+    for stock in stocks:
+        fins = fins_map.get(stock.id, [])
+        holding = holdings_map.get(stock.symbol)
+
+        # 质量评分
+        scored = score_stock(stock, fins, holding, weights)
+
+        # 内在价值估值
+        try:
+            valuation = valuate_stock(stock, fins, valuation_params)
+        except Exception as e:
+            logger.warning(f"估值 {stock.symbol} 失败: {e}")
+            valuation = None
+
+        if valuation:
+            scored['valuation'] = valuation
+            scored['intrinsic_value'] = valuation['composite'].get('intrinsic_value')
+            scored['margin_of_safety'] = valuation['margin_of_safety']
+            scored['company_type'] = valuation.get('company_type', 'mature')
+            scored['company_type_label'] = valuation.get('company_type_label', '成熟型')
+            scored['tags'] = valuation.get('tags', [])
+
+            # 用双维度决策覆盖旧的纯评分决策
+            action_v2 = _determine_action_v2(
+                scored['total_score'],
+                valuation['margin_of_safety'],
+                holding,
+                valuation_params,
+            )
+            scored['action'] = action_v2['action']
+            scored['action_label'] = action_v2['action_label']
+            scored['action_emoji'] = action_v2['action_emoji']
+        else:
+            scored['valuation'] = None
+            scored['intrinsic_value'] = None
+            scored['margin_of_safety'] = {'pct': None, 'signal': 'unknown',
+                                           'signal_label': '无法估值', 'signal_emoji': '⚫'}
+            scored['company_type'] = 'mature'
+            scored['company_type_label'] = '成熟型'
+
+        results.append(scored)
+
+    results.sort(key=lambda x: (x.get('holding') is not None, x['total_score']), reverse=True)
+    return results
+
+
 def generate_ai_recommendations(scored_stocks: List[Dict]) -> str:
     """
     基于规则评分结果，调用 AI 生成自然语言补充分析
@@ -581,16 +712,31 @@ def generate_ai_recommendations(scored_stocks: List[Dict]) -> str:
     top = scored_stocks[:4]
     bottom = scored_stocks[-4:] if len(scored_stocks) > 4 else []
 
+    # 计算估值数据
+    try:
+        from app.services.valuation_service import valuate_all_stocks
+        _val_map = {v['symbol']: v for v in valuate_all_stocks()}
+    except Exception:
+        _val_map = {}
+
     def _stock_summary(s: Dict) -> str:
         dims = s.get('dimensions', {})
         dim_text = ', '.join(
             f"{d['label']}:{d['score']}" for d in dims.values()
         )
+        # 估值信息
+        val = _val_map.get(s['symbol'])
+        val_text = ''
+        if val:
+            iv = val.get('composite', {}).get('intrinsic_value')
+            mos_pct = val.get('margin_of_safety', {}).get('pct')
+            if iv and mos_pct is not None:
+                val_text = f", 内在价值${iv:.0f}(MoS{mos_pct:+.0f}%)"
         holding_text = ''
         if s.get('holding'):
             h = s['holding']
             holding_text = f"持仓{h.get('net_shares', 0)}股, 盈亏{h.get('unrealized_pnl_pct', 0):.1f}%"
-        return f"{s['symbol']}({s.get('stock_name','')}): 总分{s['total_score']}, [{dim_text}], {holding_text}"
+        return f"{s['symbol']}({s.get('stock_name','')}): 总分{s['total_score']}, [{dim_text}]{val_text}, {holding_text}"
 
     top_text = '\n'.join(_stock_summary(s) for s in top)
     bottom_text = '\n'.join(_stock_summary(s) for s in bottom) if bottom else '（不足4只）'
@@ -792,8 +938,30 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     if ai_available_cash < 0:
         ai_available_cash = 0
 
+    # 计算估值数据，供 _stock_line() 和交易规则使用
+    try:
+        from app.services.valuation_service import valuate_all_stocks
+        val_map = {v['symbol']: v for v in valuate_all_stocks()}
+    except Exception as e:
+        logger.warning(f"generate_ai_trades 估值计算失败(不影响交易): {e}")
+        val_map = {}
+
     def _stock_line(s: Dict) -> str:
         price = price_map.get(s['symbol'], 0)
+        # 估值信息
+        val = val_map.get(s['symbol'])
+        if val:
+            iv = val.get('composite', {}).get('intrinsic_value')
+            mos = val.get('margin_of_safety', {})
+            mos_pct = mos.get('pct')
+            mos_label = mos.get('signal_label', '')
+            if iv and mos_pct is not None:
+                val_info = f", 内在价值${iv:.0f}(MoS{mos_pct:+.0f}%{mos_label})"
+            else:
+                val_info = ", 内在价值:N/A"
+        else:
+            val_info = ", 内在价值:N/A"
+        # AI持仓信息
         ai_h = ai_holdings.get(s['symbol'], {})
         ai_shares = ai_h.get('shares', 0)
         ai_cost = ai_h.get('avg_cost', 0)
@@ -804,7 +972,7 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
             holding_info = f", AI持仓{ai_shares}股"
         else:
             holding_info = ", AI未持仓(不可卖出)"
-        return f"{s['symbol']}({s.get('stock_name','')}): 评分{s['total_score']}, 现价${price}{holding_info}"
+        return f"{s['symbol']}({s.get('stock_name','')}): 质量评分{s['total_score']}, 现价${price}{val_info}{holding_info}"
 
     stocks_text = '\n'.join(_stock_line(s) for s in scored_stocks)
     from app.utils.ai_helpers import build_principles_summary
@@ -836,15 +1004,16 @@ AI可用现金: ${ai_available_cash:,.0f}
 1. 投资原则是最优先的决策依据，任何交易不得违反任何一条原则
 2. 保持克制，不要频繁交易。只在有充分理由时才操作，大多数时候应该"不操作"
 3. 单次交易金额不超过总资金的10%，避免过度集中
-4. 买入必须同时满足：(a) 符合所有投资原则 (b) 有明确的新闻或数据支撑 (c) 评分≥65
-5. 卖出条件：(a) 持仓违反投资原则应清仓 (b) 基本面恶化有具体证据 (c) 达到止损/止盈条件
-6. 没有充分理由时返回空交易 {{"trades": {{}}}}，不操作是完全合理的
-7. 买入不能超过AI可用现金，卖出不能超过AI当前持仓
-8. shares 为正整数
-9. reason（30-50字）必须引用具体的原则条款或新闻数据
+4. 买入必须同时满足：(a) 符合所有投资原则 (b) 质量评分≥60 (c) 内在价值有安全边际(MoS>0%，即现价低于内在价值) (d) 有新闻或数据支撑
+5. 优先买入安全边际(MoS)最大且质量评分高的股票——好公司+好价格才值得买入。严禁追高买入MoS为负(高估)的股票
+6. 卖出条件：(a) 持仓违反投资原则应清仓 (b) 基本面恶化有具体证据 (c) 达到止损条件 (d) 持仓MoS低于-20%(严重高估)应考虑减仓
+7. 没有充分理由时返回空交易 {{"trades": {{}}}}，不操作是完全合理的
+8. 买入不能超过AI可用现金，卖出不能超过AI当前持仓
+9. shares 为正整数
+10. reason（30-50字）必须引用具体的原则条款、评分数据、安全边际或新闻
 
 只返回 JSON，格式：
-{{"trades": {{"AAPL": {{"action": "buy", "shares": 10, "reason": "符合原则X，评分70，苹果AI新品推动增长预期"}}, "TSLA": {{"action": "sell", "shares": 5, "reason": "违反原则Y（PE>40且增速<30%），估值过高获利了结"}}}}}}"""
+{{"trades": {{"AAPL": {{"action": "buy", "shares": 10, "reason": "质量75分MoS+30%低估，原则全满足，新品推动增长"}}, "TSLA": {{"action": "sell", "shares": 5, "reason": "MoS-50%严重高估，违反原则Y，获利了结"}}}}}}"""
 
     try:
         from app.services.ai_client import create_message
