@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_TEMPLATE = """你是一名专注于基本面分析的投资助手，帮助用户分析股票、建立选股框架、监督投资纪律。
 
-【当前持仓股票数据】
+【股票池数据（含持仓与关注）】
 {stocks_summary}
 
 【股票时效新闻分析】

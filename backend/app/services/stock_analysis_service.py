@@ -586,8 +586,9 @@ def batch_load_recent_financials(stock_ids: List[int], limit: int = 3) -> Dict[i
 
 def build_stocks_summary(symbols: Optional[List[str]] = None) -> str:
     """
-    构建所有持仓股票的文本摘要（供 AI prompt 注入）
-    结果缓存 5 分钟，避免每次对话都重复查询
+    构建股票池所有股票的文本摘要（供 AI prompt 注入）。
+    区分用户实际持仓和仅关注（未持仓）的股票。
+    结果缓存 5 分钟，避免每次对话都重复查询。
     """
     cache_key = f"stocks_summary:{','.join(sorted(symbols)) if symbols else 'all'}"
     cached_result = cache.get(cache_key)
@@ -601,19 +602,39 @@ def build_stocks_summary(symbols: Optional[List[str]] = None) -> str:
         stocks = query.all()
 
         if not stocks:
-            return "（暂无持仓股票数据）"
+            return "（暂无股票池数据）"
+
+        # 获取用户实际持仓
+        from app.services.portfolio_service import compute_holdings
+        user_holdings = {h['symbol']: h for h in compute_holdings()}
 
         # Batch load all financials in 1-2 queries instead of N
         stock_ids = [s.id for s in stocks]
         fins_map = batch_load_recent_financials(stock_ids, limit=3)
 
-        blocks = []
+        held_blocks = []
+        watch_blocks = []
         for stock in stocks:
             fins = fins_map.get(stock.id, [])
             block = build_stock_text_summary(stock, fins)
-            blocks.append(block)
+            h = user_holdings.get(stock.symbol)
+            if h:
+                holding_line = (f"用户持仓: {h['net_shares']}股, "
+                                f"均价${h['avg_cost']:.2f}")
+                if h.get('unrealized_pnl_pct') is not None:
+                    holding_line += f", 盈亏{h['unrealized_pnl_pct']:+.1f}%"
+                block += f"\n{holding_line}"
+                held_blocks.append(block)
+            else:
+                watch_blocks.append(block)
 
-        result = "\n\n".join(blocks)
+        parts = []
+        if held_blocks:
+            parts.append("=== 用户实际持仓 ===\n\n" + "\n\n".join(held_blocks))
+        if watch_blocks:
+            parts.append("=== 关注但未持仓 ===\n\n" + "\n\n".join(watch_blocks))
+
+        result = "\n\n".join(parts)
         cache.set(cache_key, result, ttl_seconds=300)
         return result
     except Exception as e:
