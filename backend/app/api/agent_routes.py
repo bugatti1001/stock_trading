@@ -193,6 +193,23 @@ def daily_scores_ai_reasoning():
 def daily_scores_ai_trades():
     """AI 根据可用现金、投资原则和新闻给出具体买卖数量建议（不依赖估值模型）"""
     try:
+        # 前置检查：当日新闻分析是否已完成
+        from app.services.news_analysis_service import _get_existing_today_symbols
+        from app.models.stock import Stock
+        pool_symbols = {s.symbol for s in db_session.query(Stock.symbol).filter_by(in_pool=True).all()}
+        analyzed_symbols = _get_existing_today_symbols()
+        not_analyzed = pool_symbols - analyzed_symbols
+        if not_analyzed:
+            missing_list = ', '.join(sorted(not_analyzed)[:10])
+            if len(not_analyzed) > 10:
+                missing_list += f' 等{len(not_analyzed)}只'
+            return error_response(
+                f'请先完成当日新闻分析再执行AI交易。'
+                f'已分析 {len(analyzed_symbols)}/{len(pool_symbols)} 只，'
+                f'未分析: {missing_list}',
+                400,
+            )
+
         from app.services.stock_scorer import score_all_stocks, generate_ai_trades
         scores = score_all_stocks()
         trades = generate_ai_trades(scores)
