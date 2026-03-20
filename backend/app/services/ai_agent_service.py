@@ -314,12 +314,18 @@ def analyze_trade(trade_data: Dict[str, Any]) -> Dict[str, Any]:
         from app.services.ai_client import create_message
         raw: str = create_message(
             messages=[{'role': 'user', 'content': prompt}],
-            max_tokens=AI_TRADE_MAX_TOKENS,
+            max_tokens=2048,
         )
-        return parse_ai_json_response(raw)
-    except json.JSONDecodeError as e:
-        logger.error(f"analyze_trade JSON解析失败: {e}, 原始内容: {raw[:200] if 'raw' in locals() else 'N/A'}")
-        return {'error': f'AI 返回格式错误: {e}'}
+        logger.info(f"[analyze_trade] {symbol} AI返回 {len(raw)} 字符")
+        result = parse_ai_json_response(raw)
+        if not result or not isinstance(result, dict):
+            logger.error(f"[analyze_trade] {symbol} JSON解析失败, 原始: {raw[:300]}")
+            return {'error': f'AI 返回格式错误', 'raw': raw[:200]}
+        # 确保必要字段存在
+        if 'risk_score' not in result and 'analysis' not in result:
+            logger.error(f"[analyze_trade] {symbol} 返回缺少必要字段: {result}")
+            return {'error': 'AI 返回缺少必要字段', 'raw': str(result)[:200]}
+        return result
     except Exception as e:
         logger.error(f"analyze_trade 失败: {e}", exc_info=True)
         return {'error': str(e)}

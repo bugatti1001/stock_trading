@@ -165,11 +165,15 @@ def create_trade() -> tuple:
             'financial_data': financial_data,
         })
 
-        if 'error' not in ai_result:
+        if ai_result and 'error' not in ai_result:
             trade.violations = ai_result.get('violations', [])
             trade.risk_score = ai_result.get('risk_score', 50)
             trade.ai_analysis = ai_result.get('analysis', '')
             trade.suggestions = ai_result.get('suggestions', '')
+        else:
+            err_msg = ai_result.get('error', '未知错误') if ai_result else 'AI返回为空'
+            logger.warning(f"[create_trade] {symbol} AI分析失败: {err_msg}")
+            trade.ai_analysis = f'AI分析失败: {err_msg}'
 
         db_session.commit()
 
