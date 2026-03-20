@@ -213,20 +213,17 @@ def daily_scores_ai_trades():
             msg = '今日AI已决定不交易' if hold_record and not trades else '今日AI交易已执行'
             return success_response(trades=trades, already_executed=True, message=msg)
 
-        # 前置检查2：当日新闻分析是否已完成
+        # 前置检查2：当日新闻分析是否过半完成
         from app.services.news_analysis_service import _get_existing_today_symbols
         from app.models.stock import Stock
         pool_symbols = {s.symbol for s in db_session.query(Stock.symbol).filter_by(in_pool=True).all()}
         analyzed_symbols = _get_existing_today_symbols()
-        not_analyzed = pool_symbols - analyzed_symbols
-        if not_analyzed:
-            missing_list = ', '.join(sorted(not_analyzed)[:10])
-            if len(not_analyzed) > 10:
-                missing_list += f' 等{len(not_analyzed)}只'
+        analyzed_count = len(analyzed_symbols)
+        total_count = len(pool_symbols)
+        if total_count > 0 and analyzed_count < total_count / 2:
             return error_response(
-                f'请先完成当日新闻分析再执行AI交易。'
-                f'已分析 {len(analyzed_symbols)}/{len(pool_symbols)} 只，'
-                f'未分析: {missing_list}',
+                f'请先完成当日新闻分析再执行AI交易（需过半）。'
+                f'已分析 {analyzed_count}/{total_count} 只',
                 400,
             )
 
