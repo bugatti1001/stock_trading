@@ -194,6 +194,7 @@ def daily_scores_ai_trades():
     """AI 根据可用现金、投资原则和新闻给出具体买卖数量建议（不依赖估值模型）"""
     try:
         # 前置检查1：今天是否已执行过 AI 交易
+        from app.config.database import db_session
         from app.models.ai_trade_record import AiTradeRecord
         from datetime import date as date_type
         today = date_type.today()
