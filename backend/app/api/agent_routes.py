@@ -193,7 +193,26 @@ def daily_scores_ai_reasoning():
 def daily_scores_ai_trades():
     """AI 根据可用现金、投资原则和新闻给出具体买卖数量建议（不依赖估值模型）"""
     try:
-        # 前置检查：当日新闻分析是否已完成
+        # 前置检查1：今天是否已执行过 AI 交易
+        from app.models.ai_trade_record import AiTradeRecord
+        from datetime import date as date_type
+        today = date_type.today()
+        today_records = db_session.query(AiTradeRecord).filter(
+            AiTradeRecord.trade_date == today,
+            ~AiTradeRecord.reason.like('%初始化%'),
+            ~AiTradeRecord.reason.like('%重置%'),
+        ).all()
+        if today_records:
+            # 返回今天的交易结果（缓存），标记已执行
+            trades = {
+                r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
+                for r in today_records if r.action in ('buy', 'sell')
+            }
+            hold_record = any(r.action == 'hold' for r in today_records)
+            msg = '今日AI已决定不交易' if hold_record and not trades else '今日AI交易已执行'
+            return success_response(trades=trades, already_executed=True, message=msg)
+
+        # 前置检查2：当日新闻分析是否已完成
         from app.services.news_analysis_service import _get_existing_today_symbols
         from app.models.stock import Stock
         pool_symbols = {s.symbol for s in db_session.query(Stock.symbol).filter_by(in_pool=True).all()}

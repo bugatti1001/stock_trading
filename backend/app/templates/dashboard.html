@@ -188,6 +188,9 @@
                     <button class="btn btn-sm btn-outline-secondary" onclick="loadDailyScores()" id="scoreRefreshBtn" title="刷新评分">
                         <i class="bi bi-arrow-clockwise"></i>
                     </button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="executeAiTrade()" id="aiTradeBtn" title="执行AI模拟交易">
+                        <i class="bi bi-robot me-1"></i>AI交易
+                    </button>
                 </div>
             </div>
             <div class="card-body p-0" style="max-height:420px; overflow-y:auto;">
@@ -389,8 +392,12 @@ async function loadDailyScores() {
                 date: getTodayStr(),
                 scores: data.scores
             }));
-            // 异步加载 AI 交易建议
-            loadAiTrades(data.scores);
+            // 加载缓存的 AI 交易（不自动执行新交易）
+            const tc = JSON.parse(localStorage.getItem('dashboard_ai_trades') || 'null');
+            if (tc && tc.date === getTodayStr()) {
+                window._aiTrades = tc.trades || {};
+                renderScoreTable(data.scores);
+            }
         } else {
             document.getElementById('scoreErrorMsg').textContent = data.error || '评分失败';
             document.getElementById('scoreError').style.display = 'block';
@@ -413,20 +420,41 @@ async function loadAiHoldings() {
     } catch (e) { console.error('loadAiHoldings error:', e); }
 }
 
-async function loadAiTrades(scores) {
+async function executeAiTrade() {
+    const btn = document.getElementById('aiTradeBtn');
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 执行中...';
     try {
         const res = await fetch('/api/agent/daily_scores/ai_trades', { method: 'POST' });
         const data = await res.json();
-        if (data.success && data.trades) {
-            window._aiTrades = data.trades;
+        if (data.success) {
+            const trades = data.trades || {};
+            const count = Object.keys(trades).length;
+            window._aiTrades = trades;
             localStorage.setItem('dashboard_ai_trades', JSON.stringify({
-                date: getTodayStr(), trades: data.trades
+                date: getTodayStr(), trades: trades
             }));
-            // 重新加载 AI 持仓（交易后持仓变化）并重新渲染
             await loadAiHoldings();
-            renderScoreTable(scores);
+            // 重新渲染评分表
+            const sc = JSON.parse(localStorage.getItem(SCORE_CACHE_KEY) || 'null');
+            if (sc && sc.scores) renderScoreTable(sc.scores);
+            if (data.already_executed) {
+                alert(data.message || '今日AI交易已执行');
+            } else {
+                alert(count > 0
+                    ? `AI 交易完成：共 ${count} 笔操作`
+                    : 'AI 决定今日不交易（无符合条件的机会）');
+            }
+        } else {
+            alert(data.error || 'AI 交易失败');
         }
-    } catch (e) { console.error('loadAiTrades error:', e); }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = origHTML;
+    }
 }
 
 function renderScoreTable(scores) {
