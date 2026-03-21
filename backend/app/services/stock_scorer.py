@@ -777,9 +777,11 @@ def _init_ai_holdings_from_user():
     """
     如果 AI 没有任何交易记录，用用户当前持仓初始化 AI 持仓。
     只执行一次（首次调用时）。
+    同时保存 ai_starting_cash，使 AI 起始资产 == 用户真实资产。
     """
     from app.models.ai_trade_record import AiTradeRecord
-    from app.services.portfolio_service import compute_holdings
+    from app.models.user_setting import UserSetting
+    from app.services.portfolio_service import compute_holdings, compute_user_cash
     from datetime import date as date_type, timedelta
 
     existing = db_session.query(AiTradeRecord).first()
@@ -792,6 +794,7 @@ def _init_ai_holdings_from_user():
 
     # 用昨天的日期作为基准，不影响今天的 AI 交易决策
     yesterday = date_type.today() - timedelta(days=1)
+    ai_buy_total = 0.0
     for h in user_holdings:
         shares = h.get('net_shares', 0)
         price = h.get('avg_cost', 0) or h.get('current_price', 0)
@@ -806,9 +809,20 @@ def _init_ai_holdings_from_user():
             reason='初始化：与用户持仓同步',
         )
         db_session.add(record)
+        ai_buy_total += shares * price
+
+    # 保存 ai_starting_cash = user_cash + ai_buy_total
+    # 使 AI 现金余额 == 用户现金余额（包含用户已实现盈亏）
+    user_cash = compute_user_cash()
+    ai_starting_cash = round(user_cash + ai_buy_total, 2)
+    row = db_session.query(UserSetting).filter_by(key='ai_starting_cash').first()
+    if row:
+        row.value = str(ai_starting_cash)
+    else:
+        db_session.add(UserSetting(key='ai_starting_cash', value=str(ai_starting_cash)))
 
     db_session.commit()
-    logger.info(f"[AI Trades] 从用户持仓初始化 {len(user_holdings)} 条 AI 持仓记录")
+    logger.info(f"[AI Trades] 从用户持仓初始化, ai_starting_cash={ai_starting_cash:.2f}")
 
 
 def compute_ai_holdings() -> Dict[str, Dict]:
@@ -848,22 +862,28 @@ def compute_ai_holdings() -> Dict[str, Dict]:
 def compute_ai_cash() -> float:
     """
     计算 AI 模拟账户的独立现金余额。
-    逻辑：从 total_capital 开始，逐笔扣减买入金额、加回卖出金额。
+    优先使用 ai_starting_cash（重置时保存，保证起点与用户一致），
+    否则 fallback 到 total_capital。
     """
     from app.models.ai_trade_record import AiTradeRecord
     from app.models.user_setting import UserSetting
 
+    # 优先用 ai_starting_cash（重置时保存，包含用户已实现盈亏）
     try:
-        row = db_session.query(UserSetting).filter_by(key='total_capital').first()
-        total_capital = float(row.value) if row else 0
+        row = db_session.query(UserSetting).filter_by(key='ai_starting_cash').first()
+        if row:
+            starting_cash = float(row.value)
+        else:
+            row = db_session.query(UserSetting).filter_by(key='total_capital').first()
+            starting_cash = float(row.value) if row else 0
     except Exception:
-        total_capital = 0
+        starting_cash = 0
 
-    if total_capital <= 0:
+    if starting_cash <= 0:
         return 0.0
 
     records = db_session.query(AiTradeRecord).order_by(AiTradeRecord.trade_date).all()
-    cash = total_capital
+    cash = starting_cash
     for r in records:
         if r.action == 'buy':
             cash -= r.shares * r.price
@@ -1004,16 +1024,16 @@ AI可用现金: ${ai_available_cash:,.0f}
 1. 投资原则是最优先的决策依据，任何交易不得违反任何一条原则
 2. 保持克制，不要频繁交易。只在有充分理由时才操作，大多数时候应该"不操作"
 3. 单次交易金额不超过总资金的10%，避免过度集中
-4. 买入必须同时满足：(a) 符合所有投资原则 (b) 质量评分≥60 (c) 内在价值有安全边际(MoS>0%，即现价低于内在价值) (d) 有新闻或数据支撑
-5. 优先买入安全边际(MoS)最大且质量评分高的股票——好公司+好价格才值得买入。严禁追高买入MoS为负(高估)的股票
-6. 卖出条件：(a) 持仓违反投资原则应清仓 (b) 基本面恶化有具体证据 (c) 达到止损条件 (d) 持仓MoS低于-20%(严重高估)应考虑减仓
+4. 买入必须同时满足：(a) 符合所有投资原则 (b) 质量评分≥60 (c) 有新闻或数据支撑
+5. 内在价值和安全边际(MoS)仅作参考，不作为硬性买卖条件（该估值模型仍在验证中，可能不准确）
+6. 卖出条件：(a) 持仓违反投资原则应清仓 (b) 基本面恶化有具体证据 (c) 达到止损条件
 7. 没有充分理由时返回空交易 {{"trades": {{}}}}，不操作是完全合理的
 8. 买入不能超过AI可用现金，卖出不能超过AI当前持仓
 9. shares 为正整数
-10. reason（30-50字）必须引用具体的原则条款、评分数据、安全边际或新闻
+10. reason（30-50字）必须引用具体的原则条款、评分数据或新闻
 
 只返回 JSON，格式：
-{{"trades": {{"AAPL": {{"action": "buy", "shares": 10, "reason": "质量75分MoS+30%低估，原则全满足，新品推动增长"}}, "TSLA": {{"action": "sell", "shares": 5, "reason": "MoS-50%严重高估，违反原则Y，获利了结"}}}}}}"""
+{{"trades": {{"AAPL": {{"action": "buy", "shares": 10, "reason": "质量75分，符合原则X，新品推动增长预期"}}, "TSLA": {{"action": "sell", "shares": 5, "reason": "违反原则Y（PE>40且增速<30%），获利了结"}}}}}}"""
 
     try:
         from app.services.ai_client import create_message
