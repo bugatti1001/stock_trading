@@ -244,6 +244,40 @@
     </div>
 </div>
 
+<!-- TradingAgents 模拟账户统计 -->
+<div class="row g-3 mb-4">
+    <div class="col-12 d-flex align-items-center gap-2">
+        <small class="text-muted"><i class="bi bi-people me-1"></i>TradingAgents 模拟账户</small>
+        <button class="btn btn-outline-primary btn-sm" onclick="resetTaAccount()" title="清空TA交易记录，用用户当前持仓重新初始化">
+            <i class="bi bi-arrow-repeat me-1"></i>重置TA账户
+        </button>
+    </div>
+    <div class="col-6 col-lg">
+        <div class="card stat-card h-100" style="border-left: 4px solid #14b8a6;">
+            <div class="card-body">
+                <div class="text-muted small">TA 总资产</div>
+                <div class="fs-4 fw-bold" id="statTaTotal">—</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg">
+        <div class="card stat-card h-100" style="border-left: 4px solid #14b8a6;">
+            <div class="card-body">
+                <div class="text-muted small">TA 持仓价值</div>
+                <div class="fs-4 fw-bold" id="statTaPortfolio">—</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg">
+        <div class="card stat-card h-100" style="border-left: 4px solid #14b8a6;">
+            <div class="card-body">
+                <div class="text-muted small">TA 可用现金</div>
+                <div class="fs-4 fw-bold" id="statTaCash">—</div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- AI 交易历史 -->
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -268,6 +302,35 @@
                     </tr>
                 </thead>
                 <tbody id="aiTradeBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- TradingAgents 交易历史 -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-people me-1"></i>TradingAgents 交易历史</span>
+        <button class="btn btn-outline-primary btn-sm" onclick="loadTaTradeHistory()">
+            <i class="bi bi-arrow-clockwise me-1"></i>刷新
+        </button>
+    </div>
+    <div class="card-body p-0">
+        <div class="text-center text-muted py-3" id="taTradeEmpty">暂无 TA 交易记录</div>
+        <div class="table-responsive" id="taTradeTableWrap" style="display:none; max-height:400px; overflow-y:auto;">
+            <table class="table table-hover table-sm mb-0">
+                <thead class="table-light sticky-top">
+                    <tr>
+                        <th>日期</th>
+                        <th>代码</th>
+                        <th>操作</th>
+                        <th>数量</th>
+                        <th>价格</th>
+                        <th>金额</th>
+                        <th>决策原因</th>
+                    </tr>
+                </thead>
+                <tbody id="taTradeBody"></tbody>
             </table>
         </div>
     </div>
@@ -749,6 +812,85 @@ async function loadAiTradeHistory() {
 
 // 页面加载时自动加载 AI 交易历史
 loadAiTradeHistory();
+
+// ── TA Trade History ──────────────────────────────────────────
+async function loadTaTradeHistory() {
+    try {
+        const res = await fetch('/api/agent/ta_trade_history');
+        const data = await res.json();
+        if (!data.success || !data.trades || data.trades.length === 0) {
+            document.getElementById('taTradeEmpty').style.display = 'block';
+            document.getElementById('taTradeTableWrap').style.display = 'none';
+            return;
+        }
+        document.getElementById('taTradeEmpty').style.display = 'none';
+        document.getElementById('taTradeTableWrap').style.display = 'block';
+        const tbody = document.getElementById('taTradeBody');
+        tbody.innerHTML = data.trades.map(t => {
+            if (t.action === 'hold') {
+                return `<tr title="TA决定当日不操作">
+                    <td class="text-nowrap">${t.trade_date || ''}</td>
+                    <td colspan="5" class="text-center text-muted"><i class="bi bi-pause-circle me-1"></i>今日无操作</td>
+                    <td><small>${t.reason || ''}</small></td>
+                </tr>`;
+            }
+            const isBuy = t.action === 'buy';
+            const actionBadge = isBuy
+                ? '<span class="badge bg-success">买入</span>'
+                : '<span class="badge bg-danger">卖出</span>';
+            return `<tr>
+                <td class="text-nowrap">${t.trade_date || ''}</td>
+                <td><strong>${t.symbol}</strong></td>
+                <td>${actionBadge}</td>
+                <td>${t.shares}</td>
+                <td>$${t.price?.toFixed(2) || '0'}</td>
+                <td>$${t.amount?.toLocaleString('en-US', {maximumFractionDigits: 0}) || '0'}</td>
+                <td><small>${t.reason || ''}</small></td>
+            </tr>`;
+        }).join('');
+    } catch (e) { console.error('loadTaTradeHistory error:', e); }
+}
+
+// 页面加载时自动加载 TA 交易历史
+loadTaTradeHistory();
+
+// ── TA Stats ──────────────────────────────────────────────────
+async function loadTaStats() {
+    const fmt = v => '$' + v.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+    try {
+        const res = await fetch('/api/agent/ta_holdings');
+        const data = await res.json();
+        if (data.success && data.holdings) {
+            const taPortfolio = Object.values(data.holdings).reduce((sum, h) => sum + (h.market_value || 0), 0);
+            const taCash = data.ta_cash != null ? data.ta_cash : 0;
+            const taTotal = taPortfolio + taCash;
+            document.getElementById('statTaTotal').textContent = fmt(taTotal);
+            document.getElementById('statTaPortfolio').textContent = fmt(taPortfolio);
+            const cashEl = document.getElementById('statTaCash');
+            cashEl.textContent = fmt(taCash);
+            cashEl.className = 'fs-4 fw-bold' + (taCash < 0 ? ' text-danger' : '');
+        }
+    } catch (e) { console.error('loadTaStats error:', e); }
+}
+
+// 页面加载时自动加载 TA 统计
+loadTaStats();
+
+// ── Reset TA Account ──────────────────────────────────────────
+async function resetTaAccount() {
+    if (!confirm('确定重置 TradingAgents 模拟账户？\n将清空所有 TA 交易记录，用你当前的持仓重新初始化。')) return;
+    try {
+        const res = await fetch('/api/agent/ta_holdings/reset', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            alert(data.message || 'TA 账户已重置');
+            loadTaStats();
+            loadTaTradeHistory();
+        } else {
+            alert(data.error || '重置失败');
+        }
+    } catch (e) { alert('网络错误'); }
+}
 
 // ── Reset AI Account ──────────────────────────────────────────
 async function resetAiAccount() {

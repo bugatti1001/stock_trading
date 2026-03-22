@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Tuple, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+from zoneinfo import ZoneInfo
 
 from app.config.database import db_session
 from app.config.settings import AI_MODEL, NEWS_MAX_PARALLEL, get_anthropic_key
@@ -27,28 +28,39 @@ from app.utils.ai_helpers import build_principles_summary, parse_ai_json_respons
 logger = logging.getLogger(__name__)
 
 
+# 用美东时间（ET）判断"今天"——对美股用户更合理
+# 比如 PST 晚 9 点 = UTC 次日 5AM，但 ET 仍是当天凌晨 → 不会误删
+_ET = ZoneInfo('America/New_York')
+
+
+def _today_range_utc() -> Tuple[datetime, datetime]:
+    """返回 (today_start_utc, tomorrow_start_utc)，按美东时间算'今天'。
+    返回 naive datetime (无 tzinfo) 以匹配 SQLite 中存储的格式。"""
+    now_et = datetime.now(_ET)
+    today_start_et = datetime.combine(now_et.date(), datetime.min.time(), tzinfo=_ET)
+    tomorrow_start_et = today_start_et + timedelta(days=1)
+    # 转为 UTC naive datetime（去掉 tzinfo）——SQLite 列存的是 naive UTC
+    return (today_start_et.astimezone(timezone.utc).replace(tzinfo=None),
+            tomorrow_start_et.astimezone(timezone.utc).replace(tzinfo=None))
+
+
 def _purge_stale_analyses() -> int:
-    """Delete all analyses whose analyzed_at is before today (UTC). Returns count deleted."""
-    today_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time(), tzinfo=timezone.utc)
+    """Delete all analyses whose analyzed_at is before today (ET). Returns count deleted."""
+    today_start_utc, _ = _today_range_utc()
     count = db_session.query(StockNewsAnalysis).filter(
-        StockNewsAnalysis.analyzed_at < today_start
+        StockNewsAnalysis.analyzed_at < today_start_utc
     ).delete(synchronize_session='fetch')
     if count:
         db_session.flush()
-        logger.info(f"Purged {count} stale (non-today) news analyses")
+        logger.info(f"Purged {count} stale (non-today ET) news analyses")
     return count
 
 
 def _today_filter() -> Tuple:
-    """SQLAlchemy filter clauses: analyzed_at is today (UTC)."""
-    utc_today = datetime.now(timezone.utc).date()
-    today_start = datetime.combine(utc_today, datetime.min.time(), tzinfo=timezone.utc)
-    tomorrow_start = datetime.combine(
-        utc_today + timedelta(days=1),
-        datetime.min.time(), tzinfo=timezone.utc
-    )
-    return (StockNewsAnalysis.analyzed_at >= today_start,
-            StockNewsAnalysis.analyzed_at < tomorrow_start)
+    """SQLAlchemy filter clauses: analyzed_at is today (ET)."""
+    today_start_utc, tomorrow_start_utc = _today_range_utc()
+    return (StockNewsAnalysis.analyzed_at >= today_start_utc,
+            StockNewsAnalysis.analyzed_at < tomorrow_start_utc)
 
 
 def _get_existing_today_symbols() -> set:

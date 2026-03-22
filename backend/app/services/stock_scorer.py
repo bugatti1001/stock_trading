@@ -784,7 +784,7 @@ def _init_ai_holdings_from_user():
     from app.services.portfolio_service import compute_holdings, compute_user_cash
     from datetime import date as date_type, timedelta
 
-    existing = db_session.query(AiTradeRecord).first()
+    existing = db_session.query(AiTradeRecord).filter_by(trader='scorer').first()
     if existing:
         return  # 已有记录，不需要初始化
 
@@ -807,6 +807,7 @@ def _init_ai_holdings_from_user():
             price=price,
             trade_date=yesterday,
             reason='初始化：与用户持仓同步',
+            trader='scorer',
         )
         db_session.add(record)
         ai_buy_total += shares * price
@@ -837,7 +838,7 @@ def compute_ai_holdings() -> Dict[str, Dict]:
     # 首次自动初始化
     _init_ai_holdings_from_user()
 
-    records = db_session.query(AiTradeRecord).order_by(AiTradeRecord.trade_date).all()
+    records = db_session.query(AiTradeRecord).filter(AiTradeRecord.trader == 'scorer').order_by(AiTradeRecord.trade_date).all()
     holdings: Dict[str, Dict] = {}
 
     for r in records:
@@ -882,7 +883,7 @@ def compute_ai_cash() -> float:
     if starting_cash <= 0:
         return 0.0
 
-    records = db_session.query(AiTradeRecord).order_by(AiTradeRecord.trade_date).all()
+    records = db_session.query(AiTradeRecord).filter(AiTradeRecord.trader == 'scorer').order_by(AiTradeRecord.trade_date).all()
     cash = starting_cash
     for r in records:
         if r.action == 'buy':
@@ -910,6 +911,7 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     # 检查今天是否已执行过 AI 交易（排除初始化/重置记录）
     today = date_type.today()
     today_records = db_session.query(AiTradeRecord).filter(
+        AiTradeRecord.trader == 'scorer',
         AiTradeRecord.trade_date == today,
         ~AiTradeRecord.reason.like('%初始化%'),
         ~AiTradeRecord.reason.like('%重置%'),
@@ -1089,6 +1091,7 @@ AI可用现金: ${ai_available_cash:,.0f}
                 price=price,
                 trade_date=today,
                 reason=trade.get('reason', ''),
+                trader='scorer',
             )
             db_session.add(record)
 
@@ -1101,6 +1104,7 @@ AI可用现金: ${ai_available_cash:,.0f}
                 price=0,
                 trade_date=today,
                 reason='今日无操作：严格遵守投资原则，无符合条件的交易机会',
+                trader='scorer',
             ))
             logger.info("[AI Trades] AI 决定今日不交易")
 

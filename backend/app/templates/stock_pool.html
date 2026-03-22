@@ -850,7 +850,47 @@ document.addEventListener('DOMContentLoaded', function() {
     // 搜索框回车触发搜索
     const searchInput = document.getElementById('searchInput');
     if (searchInput) searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); searchStock(); } });
+
+    // ── 自动刷新过期行情（>4h 未更新的股票后台静默刷新）──
+    autoRefreshStaleStocks();
 });
+
+async function autoRefreshStaleStocks() {
+    const refreshBtn = document.getElementById('refreshAllBtn');
+    try {
+        const res = await fetch('/api/stocks/auto_refresh', { method: 'POST' });
+        const data = await res.json();
+        if (data.success && data.data && data.data.triggered > 0) {
+            // 显示正在刷新的提示
+            const badge = document.createElement('span');
+            badge.id = 'autoRefreshBadge';
+            badge.className = 'badge bg-info ms-2';
+            badge.innerHTML = `<span class="spinner-border spinner-border-sm" style="width:.7rem;height:.7rem"></span> 自动刷新 ${data.data.triggered} 只...`;
+            refreshBtn.parentNode.appendChild(badge);
+            // 轮询状态，完成后自动刷新页面
+            pollAutoRefreshStatus();
+        }
+    } catch (e) {
+        console.warn('Auto-refresh check failed:', e);
+    }
+}
+
+async function pollAutoRefreshStatus() {
+    const badge = document.getElementById('autoRefreshBadge');
+    const check = async () => {
+        try {
+            const res = await fetch('/api/stocks/auto_refresh/status');
+            const data = await res.json();
+            if (data.data && !data.data.running) {
+                if (badge) { badge.innerHTML = '✅ 刷新完成'; badge.className = 'badge bg-success ms-2'; }
+                setTimeout(() => location.reload(), 1500);
+                return;
+            }
+        } catch (e) { /* ignore */ }
+        setTimeout(check, 3000);  // 每 3 秒检查一次
+    };
+    setTimeout(check, 5000);  // 首次 5 秒后开始检查
+}
 
 /* ========== 单只添加：搜索 ========== */
 

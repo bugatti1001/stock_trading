@@ -264,21 +264,29 @@ def ai_holdings():
 
 @bp.route('/api/agent/ai_holdings/reset', methods=['POST'])
 def reset_ai_holdings():
-    """重置 AI 模拟账户：清空交易记录，用用户当前持仓重新初始化"""
+    """重置 AI 模拟账户：清空交易记录，用用户当前持仓重新初始化。
+    关键：保存 ai_starting_cash = user_cash + AI买入总额，
+    使重置瞬间 AI 总资产 == 用户总资产（含用户已实现盈亏）。
+    """
     try:
         from app.config.database import db_session
         from app.models.ai_trade_record import AiTradeRecord
-        from app.services.portfolio_service import compute_holdings
+        from app.models.user_setting import UserSetting
+        from app.services.portfolio_service import compute_holdings, compute_user_cash
         from datetime import date, timedelta
 
         # 清空所有 AI 交易记录
         db_session.query(AiTradeRecord).delete()
         db_session.commit()
 
+        # 获取用户当前真实现金余额
+        user_cash = compute_user_cash()
+
         # 用用户当前持仓重新初始化（昨天日期）
         yesterday = date.today() - timedelta(days=1)
         user_holdings = compute_holdings()
         count = 0
+        ai_buy_total = 0.0
         for h in user_holdings:
             shares = h.get('net_shares', 0)
             price = h.get('avg_cost', 0) or h.get('current_price', 0)
@@ -293,8 +301,21 @@ def reset_ai_holdings():
                 reason='重置：与用户持仓同步',
             )
             db_session.add(record)
+            ai_buy_total += shares * price
             count += 1
+
+        # 保存 ai_starting_cash，使 AI 现金起点 = 用户真实现金 + AI买入成本
+        # 这样 compute_ai_cash() 算出来的 AI 现金 == 用户现金
+        ai_starting_cash = round(user_cash + ai_buy_total, 2)
+        row = db_session.query(UserSetting).filter_by(key='ai_starting_cash').first()
+        if row:
+            row.value = str(ai_starting_cash)
+        else:
+            db_session.add(UserSetting(key='ai_starting_cash', value=str(ai_starting_cash)))
+
         db_session.commit()
+        logger.info(f"AI 重置: user_cash={user_cash:.2f}, ai_buy_total={ai_buy_total:.2f}, "
+                     f"ai_starting_cash={ai_starting_cash:.2f}")
         return success_response(message=f'AI 账户已重置，同步 {count} 只持仓')
     except Exception as e:
         db_session.rollback()
@@ -310,6 +331,7 @@ def ai_trade_history():
         from app.models.ai_trade_record import AiTradeRecord
         from sqlalchemy import desc
         records = db_session.query(AiTradeRecord).filter(
+            AiTradeRecord.trader == 'scorer',
             ~AiTradeRecord.reason.like('%初始化%'),
             ~AiTradeRecord.reason.like('%重置%'),
         ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).all()
@@ -325,6 +347,170 @@ def ai_trade_history():
         } for r in records])
     except Exception as e:
         logger.error(f"ai_trade_history 错误: {e}")
+        return error_response(str(e), 500)
+
+
+
+
+# ============================================================
+# TradingAgents 多Agent交易
+# ============================================================
+
+@bp.route('/api/agent/ta_trades', methods=['POST'])
+def ta_trades():
+    """TradingAgents 多Agent模拟交易"""
+    try:
+        from app.config.database import db_session
+        from app.models.ai_trade_record import AiTradeRecord
+        from datetime import date as date_type
+        today = date_type.today()
+
+        # 前置检查1：今天是否已执行过 TA 交易
+        today_records = db_session.query(AiTradeRecord).filter(
+            AiTradeRecord.trade_date == today,
+            AiTradeRecord.trader == 'tradingagents',
+            ~AiTradeRecord.reason.like('%初始化%'),
+            ~AiTradeRecord.reason.like('%重置%'),
+        ).all()
+        if today_records:
+            trades = {
+                r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
+                for r in today_records if r.action in ('buy', 'sell')
+            }
+            hold_record = any(r.action == 'hold' for r in today_records)
+            msg = '今日TA已决定不交易' if hold_record and not trades else '今日TA交易已执行'
+            return success_response(trades=trades, already_executed=True, message=msg)
+
+        # 前置检查2：当日新闻分析是否过半完成
+        from app.services.news_analysis_service import _get_existing_today_symbols
+        from app.models.stock import Stock
+        pool_symbols = {s.symbol for s in db_session.query(Stock.symbol).filter_by(in_pool=True).all()}
+        analyzed_symbols = _get_existing_today_symbols()
+        analyzed_count = len(analyzed_symbols)
+        total_count = len(pool_symbols)
+        if total_count > 0 and analyzed_count < total_count / 2:
+            return error_response(
+                f'请先完成当日新闻分析再执行TA交易（需过半）。'
+                f'已分析 {analyzed_count}/{total_count} 只',
+                400,
+            )
+
+        from app.services.tradingagents_service import generate_ta_trades
+        trades = generate_ta_trades()
+        return success_response(trades=trades)
+    except Exception as e:
+        logger.error(f"ta_trades 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/ta_holdings', methods=['GET'])
+def ta_holdings():
+    """获取 TradingAgents 模拟持仓"""
+    try:
+        from app.services.tradingagents_service import compute_ta_holdings, compute_ta_cash
+        from app.config.database import db_session
+        from app.models.stock import Stock
+        holdings = compute_ta_holdings()
+        ta_cash = compute_ta_cash()
+        result = {}
+        for symbol, h in holdings.items():
+            stock = db_session.query(Stock).filter_by(symbol=symbol).first()
+            price = stock.current_price if stock else 0
+            result[symbol] = {
+                'shares': h['shares'],
+                'avg_cost': h['avg_cost'],
+                'current_price': price,
+                'market_value': round(h['shares'] * price, 2) if price else 0,
+            }
+        return success_response(holdings=result, ta_cash=ta_cash)
+    except Exception as e:
+        logger.error(f"ta_holdings 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/ta_holdings/reset', methods=['POST'])
+def reset_ta_holdings():
+    """重置 TradingAgents 模拟账户"""
+    try:
+        from app.config.database import db_session
+        from app.models.ai_trade_record import AiTradeRecord
+        from app.models.user_setting import UserSetting
+        from app.services.portfolio_service import compute_holdings, compute_user_cash
+        from datetime import date, timedelta
+
+        # 清空所有 TA 交易记录
+        db_session.query(AiTradeRecord).filter(
+            AiTradeRecord.trader == 'tradingagents'
+        ).delete()
+        db_session.commit()
+
+        # 获取用户当前真实现金余额
+        user_cash = compute_user_cash()
+
+        # 用用户当前持仓重新初始化（昨天日期）
+        yesterday = date.today() - timedelta(days=1)
+        user_holdings = compute_holdings()
+        count = 0
+        ta_buy_total = 0.0
+        for h in user_holdings:
+            shares = h.get('net_shares', 0)
+            price = h.get('avg_cost', 0) or h.get('current_price', 0)
+            if shares <= 0 or price <= 0:
+                continue
+            record = AiTradeRecord(
+                trader='tradingagents',
+                symbol=h['symbol'],
+                action='buy',
+                shares=shares,
+                price=price,
+                trade_date=yesterday,
+                reason='重置：与用户持仓同步',
+            )
+            db_session.add(record)
+            ta_buy_total += shares * price
+            count += 1
+
+        ta_starting_cash = round(user_cash + ta_buy_total, 2)
+        row = db_session.query(UserSetting).filter_by(key='ta_starting_cash').first()
+        if row:
+            row.value = str(ta_starting_cash)
+        else:
+            db_session.add(UserSetting(key='ta_starting_cash', value=str(ta_starting_cash)))
+
+        db_session.commit()
+        logger.info(f"TA 重置: user_cash={user_cash:.2f}, ta_buy_total={ta_buy_total:.2f}, "
+                     f"ta_starting_cash={ta_starting_cash:.2f}")
+        return success_response(message=f'TA 账户已重置，同步 {count} 只持仓')
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"reset_ta_holdings 错误: {e}")
+        return error_response(str(e), 500)
+
+
+@bp.route('/api/agent/ta_trade_history', methods=['GET'])
+def ta_trade_history():
+    """获取 TradingAgents 交易历史记录"""
+    try:
+        from app.config.database import db_session
+        from app.models.ai_trade_record import AiTradeRecord
+        from sqlalchemy import desc
+        records = db_session.query(AiTradeRecord).filter(
+            AiTradeRecord.trader == 'tradingagents',
+            ~AiTradeRecord.reason.like('%初始化%'),
+            ~AiTradeRecord.reason.like('%重置%'),
+        ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).all()
+        return success_response(trades=[{
+            'id': r.id,
+            'symbol': r.symbol,
+            'action': r.action,
+            'shares': r.shares,
+            'price': r.price,
+            'trade_date': r.trade_date.isoformat() if r.trade_date else None,
+            'reason': r.reason,
+            'amount': round(r.shares * r.price, 2),
+        } for r in records])
+    except Exception as e:
+        logger.error(f"ta_trade_history 错误: {e}")
         return error_response(str(e), 500)
 
 

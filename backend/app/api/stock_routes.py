@@ -2,8 +2,9 @@ import csv
 import io
 import json
 import logging
-from datetime import date
-from flask import Blueprint, request, Response
+import threading
+from datetime import date, datetime, timezone
+from flask import Blueprint, request, Response, current_app
 from app.config.database import db_session
 from app.models.stock import Stock
 from app.models.financial_data import FinancialData, ReportPeriod
@@ -287,6 +288,81 @@ def refresh_stock_data(symbol: str) -> tuple[Response, int]:
         )
     except Exception as e:
         return error_response(str(e), 500)
+
+
+# ── 自动刷新：页面加载时检查过期数据并后台刷新 ──
+
+_auto_refresh_lock = threading.Lock()
+_auto_refresh_running = False          # 全局标记，防止并发刷新
+
+
+@bp.route('/auto_refresh', methods=['POST'])
+def auto_refresh_stale():
+    """检查池中股票，行情超过 stale_hours 小时未更新的自动后台刷新。
+    前端页面加载时调用，非阻塞 — 立即返回，后台线程处理。
+    """
+    global _auto_refresh_running
+    if _auto_refresh_running:
+        return success_response(message='刷新已在进行中', data={'triggered': 0})
+
+    stale_hours = float(request.args.get('stale_hours', 4))
+    now_utc = datetime.now(timezone.utc)
+
+    stocks = db_session.query(Stock).filter_by(in_pool=True).all()
+    stale_symbols = []
+    for s in stocks:
+        last = None
+        if s.extra_data and s.extra_data.get('last_refreshed'):
+            try:
+                last = datetime.fromisoformat(s.extra_data['last_refreshed'])
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+        if last is None or (now_utc - last).total_seconds() > stale_hours * 3600:
+            stale_symbols.append(s.symbol)
+
+    if not stale_symbols:
+        return success_response(message='所有股票数据均为最新', data={'triggered': 0})
+
+    # 后台线程逐只刷新，不阻塞请求
+    app = current_app._get_current_object()
+
+    def _bg_refresh(symbols):
+        global _auto_refresh_running
+        _auto_refresh_running = True
+        import time
+        try:
+            with app.app_context():
+                svc = StockService(db_session)
+                ok = fail = 0
+                for sym in symbols:
+                    try:
+                        has_manual = db_session.query(FinancialData).join(Stock).filter(
+                            Stock.symbol == sym,
+                            FinancialData.data_source == 'Manual Upload',
+                        ).first() is not None
+                        svc.refresh_stock_data(sym, price_only=has_manual)
+                        ok += 1
+                    except Exception as exc:
+                        logger.warning(f'Auto-refresh {sym} failed: {exc}')
+                        fail += 1
+                    time.sleep(1)          # 限流：每只间隔 1s
+                logger.info(f'✅ 自动刷新完成：成功 {ok}，失败 {fail}')
+        finally:
+            _auto_refresh_running = False
+
+    threading.Thread(target=_bg_refresh, args=(stale_symbols,), daemon=True).start()
+    return success_response(
+        message=f'后台刷新已启动：{len(stale_symbols)} 只过期股票',
+        data={'triggered': len(stale_symbols), 'symbols': stale_symbols},
+    )
+
+
+@bp.route('/auto_refresh/status', methods=['GET'])
+def auto_refresh_status():
+    """查询自动刷新是否仍在运行"""
+    return success_response(data={'running': _auto_refresh_running})
 
 
 @bp.route('/<symbol>/financials', methods=['GET'])
