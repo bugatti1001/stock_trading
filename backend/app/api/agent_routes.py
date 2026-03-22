@@ -399,8 +399,8 @@ def ta_trades():
         trades = generate_ta_trades()
         return success_response(trades=trades)
     except Exception as e:
-        logger.error(f"ta_trades 错误: {e}")
-        return error_response(str(e), 500)
+        logger.error(f"ta_trades 错误: {e}", exc_info=True)
+        return error_response(f'TA交易失败: {str(e)[:200]}', 422)
 
 
 @bp.route('/api/agent/ta_holdings', methods=['GET'])

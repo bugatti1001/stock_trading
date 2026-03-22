@@ -37,6 +37,16 @@ def _get_ta_config() -> dict:
     )
 
     config = deepcopy(DEFAULT_CONFIG)
+
+    # Redirect cache/results to writable directories (important for Docker read-only mounts)
+    writable_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'ta_cache')
+    os.makedirs(writable_dir, exist_ok=True)
+    config['project_dir'] = writable_dir
+    config['data_cache_dir'] = os.path.join(writable_dir, 'data_cache')
+    config['results_dir'] = os.path.join(writable_dir, 'results')
+    os.makedirs(config['data_cache_dir'], exist_ok=True)
+    os.makedirs(config['results_dir'], exist_ok=True)
+
     provider = get_ai_provider()
 
     if provider == 'claude':
