@@ -3,6 +3,7 @@ TradingAgents 框架集成服务。
 封装 TradingAgents 多智能体系统，为股票池中的每只股票运行分析并生成交易建议。
 """
 import logging
+import os
 from copy import deepcopy
 from datetime import date as date_type
 from typing import Dict
@@ -11,7 +12,11 @@ from app.config.database import db_session
 
 logger = logging.getLogger(__name__)
 
-TRADINGAGENTS_PATH = '/Users/hongyuanyuan/Documents/claude_projects/TradingAgents'
+# Auto-detect TradingAgents path: env var > /opt (server) > local dev
+TRADINGAGENTS_PATH = os.getenv('TRADINGAGENTS_PATH',
+    '/opt/TradingAgents' if os.path.isdir('/opt/TradingAgents')
+    else '/Users/hongyuanyuan/Documents/claude_projects/TradingAgents'
+)
 TRADER_NAME = 'tradingagents'
 MAX_POSITIONS = 5
 
