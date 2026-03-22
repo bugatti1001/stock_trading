@@ -13,7 +13,7 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install TradingAgents dependencies (multi-agent trading framework)
-COPY TradingAgents/requirements.txt /tmp/ta_requirements.txt
+COPY ta_requirements.txt /tmp/ta_requirements.txt
 RUN pip install --no-cache-dir -r /tmp/ta_requirements.txt && rm /tmp/ta_requirements.txt
 
 # Copy application code
