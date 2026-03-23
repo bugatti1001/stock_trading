@@ -838,6 +838,9 @@ async function loadTaTradeHistory() {
             const actionBadge = isBuy
                 ? '<span class="badge bg-success">买入</span>'
                 : '<span class="badge bg-danger">卖出</span>';
+            const reasonShort = (t.reason || '').length > 80 ? (t.reason || '').slice(0, 80) + '...' : (t.reason || '');
+            const hasLong = (t.reason || '').length > 80;
+            const reasonId = `ta-reason-${t.id || Math.random().toString(36).slice(2)}`;
             return `<tr>
                 <td class="text-nowrap">${t.trade_date || ''}</td>
                 <td><strong>${t.symbol}</strong></td>
@@ -845,7 +848,11 @@ async function loadTaTradeHistory() {
                 <td>${t.shares}</td>
                 <td>$${t.price?.toFixed(2) || '0'}</td>
                 <td>$${t.amount?.toLocaleString('en-US', {maximumFractionDigits: 0}) || '0'}</td>
-                <td><small>${t.reason || ''}</small></td>
+                <td style="max-width:400px">
+                    <small class="ta-reason-short" id="${reasonId}-short">${reasonShort}</small>
+                    ${hasLong ? `<a href="#" class="small text-primary ms-1" onclick="event.preventDefault();document.getElementById('${reasonId}-short').style.display='none';document.getElementById('${reasonId}-full').style.display='block';this.style.display='none'">[展开]</a>
+                    <small class="ta-reason-full" id="${reasonId}-full" style="display:none;white-space:pre-wrap">${(t.reason || '').replace(/</g,'&lt;')}</small>` : ''}
+                </td>
             </tr>`;
         }).join('');
     } catch (e) { console.error('loadTaTradeHistory error:', e); }

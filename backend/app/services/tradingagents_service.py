@@ -70,6 +70,11 @@ def _build_data_cache_for_symbol(symbol: str) -> dict:
     except Exception as e:
         logger.warning(f"[DataCache] Failed to build news cache for {sym_upper}: {e}")
 
+    try:
+        cache.update(_build_indicators_cache(sym_upper))
+    except Exception as e:
+        logger.warning(f"[DataCache] Failed to build indicators cache for {sym_upper}: {e}")
+
     return cache
 
 
@@ -272,6 +277,190 @@ def _build_news_cache(symbol: str) -> dict:
     return cache
 
 
+def _build_indicators_cache(symbol: str) -> dict:
+    """Pre-calculate all technical indicators locally using stockstats.
+
+    Downloads stock data once (or uses existing CSV cache), then calculates
+    all 13 indicators that TA's Market Analyst might request.
+    Returns cache keys like "get_indicators:AAPL:rsi" -> formatted string.
+    Also caches "get_stock_data:AAPL" for the Market Analyst's price queries.
+    """
+    import pandas as pd
+
+    cache = {}
+    today_str = date_type.today().strftime('%Y-%m-%d')
+
+    # All indicators supported by TA
+    INDICATORS = [
+        'close_50_sma', 'close_200_sma', 'close_10_ema',
+        'macd', 'macds', 'macdh',
+        'rsi',
+        'boll', 'boll_ub', 'boll_lb', 'atr',
+        'vwma', 'mfi',
+    ]
+
+    # Indicator descriptions (same as in y_finance.py)
+    IND_DESC = {
+        "close_50_sma": "50 SMA: Medium-term trend indicator.",
+        "close_200_sma": "200 SMA: Long-term trend benchmark.",
+        "close_10_ema": "10 EMA: Responsive short-term average.",
+        "macd": "MACD: Momentum via EMA differences.",
+        "macds": "MACD Signal: EMA smoothing of MACD line.",
+        "macdh": "MACD Histogram: Gap between MACD and signal.",
+        "rsi": "RSI: Overbought/oversold momentum indicator.",
+        "boll": "Bollinger Middle: 20 SMA basis for Bollinger Bands.",
+        "boll_ub": "Bollinger Upper Band: 2 std dev above middle.",
+        "boll_lb": "Bollinger Lower Band: 2 std dev below middle.",
+        "atr": "ATR: Average true range volatility measure.",
+        "vwma": "VWMA: Volume-weighted moving average.",
+        "mfi": "MFI: Money Flow Index (price + volume momentum).",
+    }
+
+    # ── Step 1: Get stock data (use TA's existing CSV cache or download) ──
+    config = _get_ta_config()
+    cache_dir = config.get('data_cache_dir', '')
+    if not cache_dir:
+        writable_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            'data', 'ta_cache'
+        )
+        cache_dir = os.path.join(writable_dir, 'data_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+
+    today_dt = pd.Timestamp.today()
+    start_dt = today_dt - pd.DateOffset(years=15)
+    start_str = start_dt.strftime("%Y-%m-%d")
+    end_str = today_dt.strftime("%Y-%m-%d")
+    csv_path = os.path.join(cache_dir, f"{symbol}-YFin-data-{start_str}-{end_str}.csv")
+
+    if os.path.exists(csv_path):
+        data = pd.read_csv(csv_path, on_bad_lines="skip")
+        logger.info(f"[DataCache] {symbol} 股价数据从本地CSV读取 ({len(data)} 行)")
+    else:
+        try:
+            import yfinance as yf
+            data = yf.download(
+                symbol, start=start_str, end=end_str,
+                multi_level_index=False, progress=False, auto_adjust=True,
+            )
+            if data.empty:
+                logger.warning(f"[DataCache] {symbol} yfinance 无数据")
+                return {}
+            data = data.reset_index()
+            data.to_csv(csv_path, index=False)
+            logger.info(f"[DataCache] {symbol} 股价数据已下载并缓存 ({len(data)} 行)")
+        except Exception as e:
+            logger.warning(f"[DataCache] {symbol} 股价数据下载失败: {e}")
+            return {}
+
+    # ── Step 2: Clean data for stockstats ──
+    try:
+        # Ensure proper column names
+        col_map = {}
+        for col in data.columns:
+            cl = col.lower().strip()
+            if cl == 'date':
+                col_map[col] = 'Date'
+            elif cl == 'open':
+                col_map[col] = 'Open'
+            elif cl == 'high':
+                col_map[col] = 'High'
+            elif cl == 'low':
+                col_map[col] = 'Low'
+            elif cl in ('close', 'adj close'):
+                col_map[col] = 'Close'
+            elif cl == 'volume':
+                col_map[col] = 'Volume'
+        data = data.rename(columns=col_map)
+
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors='coerce')
+
+        if 'Date' in data.columns:
+            data['Date'] = pd.to_datetime(data['Date'])
+        else:
+            logger.warning(f"[DataCache] {symbol} 无Date列")
+            return {}
+
+        data = data.dropna(subset=['Close'])
+    except Exception as e:
+        logger.warning(f"[DataCache] {symbol} 数据清洗失败: {e}")
+        return {}
+
+    # ── Step 3: Cache get_stock_data (recent 60 days for Market Analyst) ──
+    try:
+        recent = data.tail(60).copy()
+        recent_csv = recent[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        recent_csv['Date'] = recent_csv['Date'].dt.strftime('%Y-%m-%d')
+        for col in ['Open', 'High', 'Low', 'Close']:
+            recent_csv[col] = recent_csv[col].round(2)
+        header = f"# Stock data for {symbol} (recent 60 days, from local cache)\n"
+        header += f"# Total records: {len(recent_csv)}\n\n"
+        cache[f"get_stock_data:{symbol}"] = header + recent_csv.to_csv(index=False)
+    except Exception as e:
+        logger.warning(f"[DataCache] {symbol} get_stock_data 缓存失败: {e}")
+
+    # ── Step 4: Calculate all indicators using stockstats ──
+    try:
+        from stockstats import wrap
+
+        # stockstats needs lowercase columns and no 'Date' column (causes parse errors)
+        dates = data['Date'].reset_index(drop=True)
+        df_num = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy().reset_index(drop=True)
+        df_num.columns = ['open', 'high', 'low', 'close', 'volume']
+        for c in df_num.columns:
+            df_num[c] = pd.to_numeric(df_num[c], errors='coerce')
+        df_num = df_num.ffill().bfill()
+
+        ss = wrap(df_num)
+
+        look_back = 30  # Default look-back window
+        curr_date_dt = pd.to_datetime(today_str)
+        before_dt = curr_date_dt - pd.Timedelta(days=look_back)
+
+        for indicator in INDICATORS:
+            try:
+                # Trigger indicator calculation
+                vals = ss[indicator]
+
+                # Build date-value pairs for the look-back window
+                ind_lines = []
+                for idx in range(len(dates)):
+                    d = dates.iloc[idx]
+                    if d < before_dt or d > curr_date_dt:
+                        continue
+                    v = vals.iloc[idx] if idx < len(vals) else None
+                    d_str = d.strftime('%Y-%m-%d')
+                    val_str = "N/A" if v is None or pd.isna(v) else str(round(float(v), 4))
+                    ind_lines.append(f"{d_str}: {val_str}")
+
+                if not ind_lines:
+                    continue
+
+                result = (
+                    f"## {indicator} values from {before_dt.strftime('%Y-%m-%d')} to {today_str}:\n\n"
+                    + "\n".join(ind_lines)
+                    + "\n\n"
+                    + IND_DESC.get(indicator, "")
+                )
+
+                cache[f"get_indicators:{symbol}:{indicator}"] = result
+
+            except Exception as e:
+                logger.debug(f"[DataCache] {symbol} 指标 {indicator} 计算失败: {e}")
+
+    except ImportError:
+        logger.warning("[DataCache] stockstats 未安装，跳过技术指标预计算")
+    except Exception as e:
+        logger.warning(f"[DataCache] {symbol} 技术指标预计算失败: {e}")
+
+    ind_count = sum(1 for k in cache if 'get_indicators' in k)
+    logger.info(f"[DataCache] {symbol} 技术指标: {ind_count}/{len(INDICATORS)} 个, 股价数据: {'✓' if f'get_stock_data:{symbol}' in cache else '✗'}")
+
+    return cache
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Config helper
 # ══════════════════════════════════════════════════════════════════════════════
@@ -412,8 +601,8 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
                 action = 'HOLD'
 
             reason = final_state.get('final_trade_decision', '') or ''
-            if len(reason) > 500:
-                reason = reason[:500] + '...'
+            if len(reason) > 2000:
+                reason = reason[:2000] + '...'
 
             logger.info(f"[TA] {symbol} 决策: {action}")
             return {'action': action.lower(), 'reason': reason}
@@ -712,7 +901,7 @@ def generate_ta_trades() -> dict:
             shares=shares,
             price=price,
             trade_date=today,
-            reason=decisions[symbol].get('reason', '')[:500],
+            reason=decisions[symbol].get('reason', '')[:2000],
         )
         db_session.add(record)
         available_cash += shares * price
@@ -758,7 +947,7 @@ def generate_ta_trades() -> dict:
             shares=max_shares,
             price=price,
             trade_date=today,
-            reason=decisions[symbol].get('reason', '')[:500],
+            reason=decisions[symbol].get('reason', '')[:2000],
         )
         db_session.add(record)
         available_cash -= cost
