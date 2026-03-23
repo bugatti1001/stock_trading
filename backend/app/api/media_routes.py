@@ -40,16 +40,32 @@ def fetch_news():
         if not stocks:
             return success_response(news={}, total=0, stocks_searched=0)
 
-        stock_dicts = [{'symbol': s.symbol, 'name': s.name or s.symbol} for s in stocks]
         stock_names = {s.symbol: s.name or s.symbol for s in stocks}
-        news_by_symbol = fetch_news_for_stocks(stock_dicts, days_back=7, num_per_stock=8)
+
+        # 跳过已有当日AI分析的股票（不需要重新抓新闻）
+        from app.services.news_analysis_service import _get_existing_today_symbols
+        already_analyzed = _get_existing_today_symbols()
+        stocks_to_fetch = [s for s in stocks if s.symbol not in already_analyzed]
+        stocks_skipped = [s for s in stocks if s.symbol in already_analyzed]
+
+        news_by_symbol = {}
+        if stocks_to_fetch:
+            stock_dicts = [{'symbol': s.symbol, 'name': s.name or s.symbol} for s in stocks_to_fetch]
+            news_by_symbol = fetch_news_for_stocks(stock_dicts, days_back=7, num_per_stock=8)
+
+        # 已分析的股票也加入结果（空新闻列表，AI分析时会自动跳过）
+        for s in stocks_skipped:
+            news_by_symbol.setdefault(s.symbol, [])
+
         total = sum(len(items) for items in news_by_symbol.values())
+        skipped_count = len(stocks_skipped)
 
         return success_response(
             news=news_by_symbol,
             stock_names=stock_names,
             total=total,
-            stocks_searched=len(stock_dicts)
+            stocks_searched=len(stocks_to_fetch),
+            skipped_analyzed=skipped_count,
         )
     except Exception as e:
         logger.error(f"fetch_news error: {e}", exc_info=True)

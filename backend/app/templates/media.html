@@ -284,9 +284,18 @@ async function fetchSelectedNews() {
         renderNewsFeed(cachedNewsBySymbol);
         document.getElementById('newsCount').textContent = total;
 
-        if (total > 0) {
+        const skipped = data.skipped_analyzed || 0;
+        if (total > 0 || skipped > 0) {
             document.getElementById('analyzeBtn').disabled = false;
-            showStatus(`已获取 ${total} 条新闻（${data.stocks_searched} 只股票）`, false);
+            let msg = '';
+            if (skipped > 0 && data.stocks_searched === 0) {
+                msg = `全部 ${skipped} 只股票今日已分析完毕，无需重复操作`;
+            } else if (skipped > 0) {
+                msg = `已获取 ${total} 条新闻（${data.stocks_searched} 只股票），${skipped} 只今日已分析(跳过抓取)`;
+            } else {
+                msg = `已获取 ${total} 条新闻（${data.stocks_searched} 只股票）`;
+            }
+            showStatus(msg, false);
         } else {
             showStatus('未获取到新闻，请检查 API 配置或稍后重试', false);
         }
