@@ -230,6 +230,8 @@
                             <th>AI持仓</th>
                             <th>AI交易 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
                                 title="AI 根据估值、投资原则和新闻&#10;给出的具体买卖数量建议&#10;（需先在交易日记设置总资金）"></i></th>
+                            <th>TA交易 <i class="bi bi-info-circle text-muted" style="cursor:help; font-size:0.75rem;"
+                                title="TradingAgents 多Agent辩论系统&#10;给出的交易建议"></i></th>
                         </tr>
                     </thead>
                     <tbody id="scoreTableBody"></tbody>
@@ -366,6 +368,11 @@ async function initScores() {
                 const tc = JSON.parse(localStorage.getItem('dashboard_ai_trades'));
                 if (tc && tc.date === getTodayStr()) window._aiTrades = tc.trades || {};
             } catch(e2) {}
+            // 恢复 TA 交易缓存
+            try {
+                const ttc = JSON.parse(localStorage.getItem('dashboard_ta_trades'));
+                if (ttc && ttc.date === getTodayStr()) window._taTrades = ttc.trades || {};
+            } catch(e3) {}
             // 加载 AI 持仓
             await loadAiHoldings();
             renderScoreTable(cached.scores);
@@ -399,8 +406,14 @@ async function loadDailyScores() {
             const tc = JSON.parse(localStorage.getItem('dashboard_ai_trades') || 'null');
             if (tc && tc.date === getTodayStr()) {
                 window._aiTrades = tc.trades || {};
-                renderScoreTable(data.scores);
             }
+            // 加载缓存的 TA 交易
+            const ttc = JSON.parse(localStorage.getItem('dashboard_ta_trades') || 'null');
+            if (ttc && ttc.date === getTodayStr()) {
+                window._taTrades = ttc.trades || {};
+            }
+            // 有任何交易缓存则重新渲染
+            if (window._aiTrades || window._taTrades) renderScoreTable(data.scores);
         } else {
             document.getElementById('scoreErrorMsg').textContent = data.error || '评分失败';
             document.getElementById('scoreError').style.display = 'block';
@@ -460,17 +473,100 @@ async function executeAiTrade() {
     }
 }
 
+let _taProgressInterval = null;
+
+function showTaProgress() {
+    let modal = document.getElementById('taProgressModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'taProgressModal';
+        modal.className = 'modal fade';
+        modal.setAttribute('data-bs-backdrop', 'static');
+        modal.setAttribute('data-bs-keyboard', 'false');
+        modal.innerHTML = `<div class="modal-dialog modal-sm">
+            <div class="modal-content">
+                <div class="modal-header py-2">
+                    <h6 class="modal-title"><i class="bi bi-people me-1"></i>TradingAgents 分析中</h6>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between mb-1">
+                        <small id="taProgressText">准备中...</small>
+                        <small id="taProgressCount">0/0</small>
+                    </div>
+                    <div class="progress mb-2">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" id="taProgressBar" style="width:0%"></div>
+                    </div>
+                    <div id="taProgressLog" style="max-height:150px;overflow-y:auto;font-size:.78rem;background:#f8f9fa;padding:6px;border-radius:4px;"></div>
+                </div>
+            </div>
+        </div>`;
+        document.body.appendChild(modal);
+    }
+    document.getElementById('taProgressText').textContent = '准备中...';
+    document.getElementById('taProgressCount').textContent = '0/0';
+    document.getElementById('taProgressBar').style.width = '0%';
+    document.getElementById('taProgressLog').innerHTML = '';
+    new bootstrap.Modal(modal).show();
+}
+
+function updateTaProgress(data) {
+    const total = data.total || 0;
+    const completed = data.completed || 0;
+    const pct = total > 0 ? Math.round(completed / total * 100) : 0;
+    document.getElementById('taProgressBar').style.width = pct + '%';
+    document.getElementById('taProgressCount').textContent = `${completed}/${total}`;
+    const sym = data.current_symbol || '';
+    document.getElementById('taProgressText').textContent = completed < total
+        ? `分析中: ${sym}` : '完成';
+    // Update log with results
+    const log = document.getElementById('taProgressLog');
+    const results = data.results || {};
+    const lines = Object.entries(results).map(([s, a]) => {
+        const color = a === 'buy' ? 'text-success' : a === 'sell' ? 'text-danger' : '';
+        return `<div class="${color}">${s}: ${a.toUpperCase()}</div>`;
+    });
+    log.innerHTML = lines.join('');
+    log.scrollTop = log.scrollHeight;
+}
+
+function hideTaProgress() {
+    const modal = document.getElementById('taProgressModal');
+    if (modal) {
+        const inst = bootstrap.Modal.getInstance(modal);
+        if (inst) inst.hide();
+    }
+    if (_taProgressInterval) { clearInterval(_taProgressInterval); _taProgressInterval = null; }
+}
+
 async function executeTaTrade() {
     const btn = document.getElementById('taTradeBtn');
     const origHTML = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 执行中...';
+
+    // Show progress modal and start polling
+    showTaProgress();
+    _taProgressInterval = setInterval(async () => {
+        try {
+            const r = await fetch('/api/agent/ta_progress');
+            const d = await r.json();
+            if (d.success) updateTaProgress(d);
+        } catch (e) {}
+    }, 3000);
+
     try {
         const res = await fetch('/api/agent/ta_trades', { method: 'POST' });
         const data = await res.json();
+        hideTaProgress();
         if (data.success) {
             const trades = data.trades || {};
             const count = Object.keys(trades).length;
+            window._taTrades = trades;
+            localStorage.setItem('dashboard_ta_trades', JSON.stringify({
+                date: getTodayStr(), trades: trades
+            }));
+            const sc = JSON.parse(localStorage.getItem(SCORE_CACHE_KEY) || 'null');
+            if (sc && sc.scores) renderScoreTable(sc.scores);
             if (data.already_executed) {
                 alert(data.message || '今日TA交易已执行');
             } else {
@@ -482,6 +578,7 @@ async function executeTaTrade() {
             alert(data.error || 'TA 交易失败');
         }
     } catch (e) {
+        hideTaProgress();
         alert('网络错误: ' + e.message);
     } finally {
         btn.disabled = false;
@@ -494,7 +591,7 @@ function renderScoreTable(scores) {
     tbody.innerHTML = '';
 
     if (!scores || scores.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">股票池暂无数据</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-3">股票池暂无数据</td></tr>';
         document.getElementById('scoreTable').style.display = 'table';
         return;
     }
@@ -585,6 +682,19 @@ function renderScoreTable(scores) {
                 <i class="bi bi-${icon}"></i> ${label} ${aiTrade.shares}股</span>`;
         }
 
+        // TA 交易建议列
+        const taTrade = (window._taTrades || {})[s.symbol];
+        let taTradeCell = '<span class="text-muted">-</span>';
+        if (taTrade) {
+            const isBuy = taTrade.action === 'buy';
+            const color = isBuy ? 'success' : 'danger';
+            const icon = isBuy ? 'cart-plus' : 'cart-dash';
+            const label = isBuy ? '买入' : '卖出';
+            const reasonShort = (taTrade.reason || '').substring(0, 150).replace(/"/g, '&quot;');
+            taTradeCell = `<span class="badge bg-${color}" style="cursor:help" title="${reasonShort}">
+                <i class="bi bi-${icon}"></i> ${label} ${taTrade.shares}股</span>`;
+        }
+
         // 标签徽章
         const tags = (s.tags || []).map(t => {
             const isAI = t.includes('AI');
@@ -607,6 +717,7 @@ function renderScoreTable(scores) {
             <td><span class="action-badge ${actionClass(s.action)}">${s.action_emoji} ${s.action_label}</span></td>
             <td>${aiValueCell}</td>
             <td>${aiTradeCell}</td>
+            <td>${taTradeCell}</td>
         `;
         tbody.appendChild(tr);
     });
@@ -616,6 +727,31 @@ function renderScoreTable(scores) {
 }
 
 initScores();
+
+// 页面加载时从后端获取今日 TA 交易（如果 localStorage 没有缓存）
+(async function loadTodayTaTrades() {
+    try {
+        const ttc = JSON.parse(localStorage.getItem('dashboard_ta_trades') || 'null');
+        if (ttc && ttc.date === getTodayStr() && Object.keys(ttc.trades || {}).length > 0) return;
+        const res = await fetch('/api/agent/ta_trade_history');
+        const data = await res.json();
+        if (data.success && data.trades) {
+            const today = getTodayStr();
+            const todayTrades = {};
+            data.trades.forEach(t => {
+                if (t.trade_date === today && (t.action === 'buy' || t.action === 'sell')) {
+                    todayTrades[t.symbol] = {action: t.action, shares: t.shares, reason: t.reason || ''};
+                }
+            });
+            if (Object.keys(todayTrades).length > 0) {
+                window._taTrades = todayTrades;
+                localStorage.setItem('dashboard_ta_trades', JSON.stringify({date: today, trades: todayTrades}));
+                const sc = JSON.parse(localStorage.getItem(SCORE_CACHE_KEY) || 'null');
+                if (sc && sc.scores) renderScoreTable(sc.scores);
+            }
+        }
+    } catch(e) { console.warn('加载TA交易缓存失败:', e); }
+})();
 
 /* ===== AI 选股建议 ===== */
 const INSIGHT_CACHE_KEY = 'dashboard_insight';

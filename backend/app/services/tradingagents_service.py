@@ -563,6 +563,19 @@ def _get_ta_config() -> dict:
 _launch_lock = threading.Lock()
 _last_launch_time = 0.0
 
+# Global progress tracker for TA analysis (polled by frontend)
+_ta_progress = {
+    'running': False,
+    'completed': 0,
+    'total': 0,
+    'current_symbol': '',
+    'results': {},  # symbol -> action
+}
+
+def get_ta_progress() -> dict:
+    """Return current TA analysis progress (for polling endpoint)."""
+    return dict(_ta_progress)
+
 
 def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
     """
@@ -877,33 +890,47 @@ def generate_ta_trades() -> dict:
     total_cached = sum(len(v) for v in symbol_caches.values())
     logger.info(f"[TA] 预缓存完成: {total_cached} 条数据条目 (含全局新闻共享, 省去对应数量的外部API调用)")
 
-    # 5. Parallel analysis with ThreadPoolExecutor
+    # 5. Parallel analysis with ThreadPoolExecutor + progress tracking
     decisions: Dict[str, dict] = {}
     completed = 0
 
+    _ta_progress['running'] = True
+    _ta_progress['completed'] = 0
+    _ta_progress['total'] = len(symbols)
+    _ta_progress['current_symbol'] = ''
+    _ta_progress['results'] = {}
+
     def _run_one(sym):
+        _ta_progress['current_symbol'] = sym
         return sym, run_ta_for_stock(sym, data_cache=symbol_caches.get(sym))
 
     workers = min(MAX_WORKERS, len(symbols))
     logger.info(f"[TA] 启动并行分析: {workers} 个并发线程")
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_run_one, sym): sym for sym in symbols}
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_run_one, sym): sym for sym in symbols}
 
-        for future in as_completed(futures):
-            sym = futures[future]
-            try:
-                sym_result, decision = future.result()
-                decisions[sym_result] = decision
-                completed += 1
-                logger.info(
-                    f"[TA] 完成 {completed}/{len(symbols)}: "
-                    f"{sym_result} -> {decision['action']}"
-                )
-            except Exception as e:
-                decisions[sym] = {'action': 'hold', 'reason': f'并行执行异常: {str(e)[:200]}'}
-                completed += 1
-                logger.error(f"[TA] {sym} 并行执行异常: {e}", exc_info=True)
+            for future in as_completed(futures):
+                sym = futures[future]
+                try:
+                    sym_result, decision = future.result()
+                    decisions[sym_result] = decision
+                    completed += 1
+                    _ta_progress['completed'] = completed
+                    _ta_progress['results'][sym_result] = decision['action']
+                    logger.info(
+                        f"[TA] 完成 {completed}/{len(symbols)}: "
+                        f"{sym_result} -> {decision['action']}"
+                    )
+                except Exception as e:
+                    decisions[sym] = {'action': 'hold', 'reason': f'并行执行异常: {str(e)[:200]}'}
+                    completed += 1
+                    _ta_progress['completed'] = completed
+                    _ta_progress['results'][sym] = 'error'
+                    logger.error(f"[TA] {sym} 并行执行异常: {e}", exc_info=True)
+    finally:
+        _ta_progress['running'] = False
 
     logger.info(f"[TA] 全部分析完成: {len(decisions)} 只股票")
 

@@ -403,6 +403,16 @@ def ta_trades():
         return error_response(f'TA交易失败: {str(e)[:200]}', 422)
 
 
+@bp.route('/api/agent/ta_progress', methods=['GET'])
+def ta_progress():
+    """获取 TradingAgents 分析进度（前端轮询）"""
+    try:
+        from app.services.tradingagents_service import get_ta_progress
+        return success_response(**get_ta_progress())
+    except Exception as e:
+        return error_response(str(e), 500)
+
+
 @bp.route('/api/agent/ta_holdings', methods=['GET'])
 def ta_holdings():
     """获取 TradingAgents 模拟持仓"""
