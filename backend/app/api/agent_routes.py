@@ -275,8 +275,8 @@ def reset_ai_holdings():
         from app.services.portfolio_service import compute_holdings, compute_user_cash
         from datetime import date, timedelta
 
-        # 清空所有 AI 交易记录
-        db_session.query(AiTradeRecord).delete()
+        # 清空所有 scorer AI 交易记录
+        db_session.query(AiTradeRecord).filter_by(trader='scorer').delete()
         db_session.commit()
 
         # 获取用户当前真实现金余额
@@ -293,6 +293,7 @@ def reset_ai_holdings():
             if shares <= 0 or price <= 0:
                 continue
             record = AiTradeRecord(
+                trader='scorer',
                 symbol=h['symbol'],
                 action='buy',
                 shares=shares,
@@ -334,7 +335,7 @@ def ai_trade_history():
             AiTradeRecord.trader == 'scorer',
             ~AiTradeRecord.reason.like('%初始化%'),
             ~AiTradeRecord.reason.like('%重置%'),
-        ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).all()
+        ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).limit(200).all()
         return success_response(trades=[{
             'id': r.id,
             'symbol': r.symbol,
@@ -508,7 +509,7 @@ def ta_trade_history():
             AiTradeRecord.trader == 'tradingagents',
             ~AiTradeRecord.reason.like('%初始化%'),
             ~AiTradeRecord.reason.like('%重置%'),
-        ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).all()
+        ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).limit(200).all()
         return success_response(trades=[{
             'id': r.id,
             'symbol': r.symbol,

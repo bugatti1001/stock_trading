@@ -563,6 +563,9 @@ def _get_ta_config() -> dict:
 _launch_lock = threading.Lock()
 _last_launch_time = 0.0
 
+# Lock for _ta_progress to prevent race conditions across threads
+_progress_lock = threading.Lock()
+
 # Global progress tracker for TA analysis (polled by frontend)
 _ta_progress = {
     'running': False,
@@ -574,7 +577,8 @@ _ta_progress = {
 
 def get_ta_progress() -> dict:
     """Return current TA analysis progress (for polling endpoint)."""
-    return dict(_ta_progress)
+    with _progress_lock:
+        return dict(_ta_progress)
 
 
 def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
@@ -598,6 +602,9 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
 
     config = _get_ta_config()
     api_key = config.pop('api_key', None)
+
+    if not api_key:
+        return {'action': 'hold', 'reason': '未配置 API Key，请在登录时输入'}
 
     today_str = date_type.today().strftime('%Y-%m-%d')
 
@@ -649,7 +656,7 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
             if action not in ('BUY', 'SELL', 'HOLD'):
                 action = 'HOLD'
 
-            reason = final_state.get('final_trade_decision', '') or ''
+            reason = (final_state or {}).get('final_trade_decision', '') or ''
             # reason 字段为 Text 类型，不限长度，保留完整的多Agent分析报告
 
             logger.info(f"[TA] {symbol} 决策: {action}")
@@ -894,14 +901,16 @@ def generate_ta_trades() -> dict:
     decisions: Dict[str, dict] = {}
     completed = 0
 
-    _ta_progress['running'] = True
-    _ta_progress['completed'] = 0
-    _ta_progress['total'] = len(symbols)
-    _ta_progress['current_symbol'] = ''
-    _ta_progress['results'] = {}
+    with _progress_lock:
+        _ta_progress['running'] = True
+        _ta_progress['completed'] = 0
+        _ta_progress['total'] = len(symbols)
+        _ta_progress['current_symbol'] = ''
+        _ta_progress['results'] = {}
 
     def _run_one(sym):
-        _ta_progress['current_symbol'] = sym
+        with _progress_lock:
+            _ta_progress['current_symbol'] = sym
         return sym, run_ta_for_stock(sym, data_cache=symbol_caches.get(sym))
 
     workers = min(MAX_WORKERS, len(symbols))
@@ -917,8 +926,9 @@ def generate_ta_trades() -> dict:
                     sym_result, decision = future.result()
                     decisions[sym_result] = decision
                     completed += 1
-                    _ta_progress['completed'] = completed
-                    _ta_progress['results'][sym_result] = decision['action']
+                    with _progress_lock:
+                        _ta_progress['completed'] = completed
+                        _ta_progress['results'][sym_result] = decision['action']
                     logger.info(
                         f"[TA] 完成 {completed}/{len(symbols)}: "
                         f"{sym_result} -> {decision['action']}"
@@ -926,11 +936,13 @@ def generate_ta_trades() -> dict:
                 except Exception as e:
                     decisions[sym] = {'action': 'hold', 'reason': f'并行执行异常: {str(e)[:200]}'}
                     completed += 1
-                    _ta_progress['completed'] = completed
-                    _ta_progress['results'][sym] = 'error'
+                    with _progress_lock:
+                        _ta_progress['completed'] = completed
+                        _ta_progress['results'][sym] = 'error'
                     logger.error(f"[TA] {sym} 并行执行异常: {e}", exc_info=True)
     finally:
-        _ta_progress['running'] = False
+        with _progress_lock:
+            _ta_progress['running'] = False
 
     logger.info(f"[TA] 全部分析完成: {len(decisions)} 只股票")
 
