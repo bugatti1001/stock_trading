@@ -199,6 +199,7 @@ def daily_scores_ai_trades():
         from datetime import date as date_type
         today = date_type.today()
         today_records = db_session.query(AiTradeRecord).filter(
+            AiTradeRecord.trader == 'scorer',
             AiTradeRecord.trade_date == today,
             ~AiTradeRecord.reason.like('%初始化%'),
             ~AiTradeRecord.reason.like('%重置%'),
