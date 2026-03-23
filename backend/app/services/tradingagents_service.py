@@ -277,6 +277,42 @@ def _build_news_cache(symbol: str) -> dict:
     return cache
 
 
+def _build_global_news_cache() -> dict:
+    """Fetch global/macro news ONCE and return a cache dict.
+
+    The cache key "get_global_news" matches the lookup in interface.py
+    so all stocks share the same global news without re-fetching.
+    """
+    from datetime import datetime, timedelta
+    cache: dict = {}
+
+    try:
+        curr_date = datetime.now().strftime("%Y-%m-%d")
+
+        # Try to get global news from yfinance (one-time fetch)
+        import sys, os
+        TRADINGAGENTS_PATH = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            '..', 'claude_projects', 'TradingAgents'
+        )
+        if TRADINGAGENTS_PATH not in sys.path:
+            sys.path.insert(0, TRADINGAGENTS_PATH)
+
+        from tradingagents.dataflows.yfinance_news import get_global_news_yfinance
+        global_news_text = get_global_news_yfinance(curr_date, look_back_days=7, limit=10)
+
+        if global_news_text and "Error" not in global_news_text:
+            cache["get_global_news"] = global_news_text
+            logger.info(f"[GlobalNews] 预获取全局新闻成功 ({len(global_news_text)} chars), 将共享给所有股票")
+        else:
+            logger.warning(f"[GlobalNews] 预获取全局新闻返回空或错误: {global_news_text[:100] if global_news_text else 'None'}")
+
+    except Exception as e:
+        logger.warning(f"[GlobalNews] 预获取全局新闻失败: {e}")
+
+    return cache
+
+
 def _build_indicators_cache(symbol: str) -> dict:
     """Pre-calculate all technical indicators locally using stockstats.
 
@@ -601,8 +637,7 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
                 action = 'HOLD'
 
             reason = final_state.get('final_trade_decision', '') or ''
-            if len(reason) > 2000:
-                reason = reason[:2000] + '...'
+            # reason 字段为 Text 类型，不限长度，保留完整的多Agent分析报告
 
             logger.info(f"[TA] {symbol} 决策: {action}")
             return {'action': action.lower(), 'reason': reason}
@@ -823,19 +858,24 @@ def generate_ta_trades() -> dict:
 
     logger.info(f"[TA] 可用现金: ${ta_cash:,.2f}, 当前持仓: {list(ta_holdings.keys())}")
 
-    # 4. Pre-build data caches for ALL symbols (fast, DB-only, no API calls)
+    # 4a. Pre-fetch global news ONCE and share across all stocks
+    global_news_cache = _build_global_news_cache()
+
+    # 4b. Pre-build data caches for ALL symbols (fast, DB-only, no API calls)
     symbol_caches: Dict[str, dict] = {}
     for sym in symbols:
         try:
             symbol_caches[sym] = _build_data_cache_for_symbol(sym)
+            # Inject shared global news into each symbol's cache
+            symbol_caches[sym].update(global_news_cache)
             cached_keys = list(symbol_caches[sym].keys())
             logger.info(f"[TA] {sym} 预缓存: {len(cached_keys)} 条 ({cached_keys})")
         except Exception as e:
             logger.warning(f"[TA] {sym} 预缓存构建失败: {e}")
-            symbol_caches[sym] = {}
+            symbol_caches[sym] = dict(global_news_cache)  # at least have global news
 
     total_cached = sum(len(v) for v in symbol_caches.values())
-    logger.info(f"[TA] 预缓存完成: {total_cached} 条数据条目 (省去对应数量的外部API调用)")
+    logger.info(f"[TA] 预缓存完成: {total_cached} 条数据条目 (含全局新闻共享, 省去对应数量的外部API调用)")
 
     # 5. Parallel analysis with ThreadPoolExecutor
     decisions: Dict[str, dict] = {}
@@ -901,7 +941,7 @@ def generate_ta_trades() -> dict:
             shares=shares,
             price=price,
             trade_date=today,
-            reason=decisions[symbol].get('reason', '')[:2000],
+            reason=decisions[symbol].get('reason', ''),
         )
         db_session.add(record)
         available_cash += shares * price
@@ -947,7 +987,7 @@ def generate_ta_trades() -> dict:
             shares=max_shares,
             price=price,
             trade_date=today,
-            reason=decisions[symbol].get('reason', '')[:2000],
+            reason=decisions[symbol].get('reason', ''),
         )
         db_session.add(record)
         available_cash -= cost
