@@ -1,13 +1,21 @@
 """
 TradingAgents 框架集成服务。
 封装 TradingAgents 多智能体系统，为股票池中的每只股票运行分析并生成交易建议。
+
+优化 v2:
+  A. 复用 DB 财务数据 — 通过 inject_data_cache 将已有财报/现金流/资产负债表注入 TA
+  B. 复用 DB 新闻分析 — 将已有的 AI 新闻摘要/情感注入 TA 新闻分析师
+  C. 并行处理 + API 限流 — ThreadPoolExecutor 并发分析多只股票，内置 token 限流等待
 """
 import logging
 import os
 import sys
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from datetime import date as date_type
-from typing import Dict
+from datetime import date as date_type, datetime, timedelta
+from typing import Dict, List, Optional
 
 from app.config.database import db_session
 
@@ -25,6 +33,248 @@ if os.path.isdir(TRADINGAGENTS_PATH) and TRADINGAGENTS_PATH not in sys.path:
 TRADER_NAME = 'tradingagents'
 MAX_POSITIONS = 5
 
+# ── Concurrency & Rate-Limit Settings ─────────────────────────────────────
+# How many stocks to analyze in parallel.  Keep low to avoid API rate limits.
+MAX_WORKERS = 3
+# Minimum seconds between launching successive TA analyses (token cool-down)
+LAUNCH_INTERVAL_SEC = 5
+# If an LLM call fails with rate-limit / timeout, retry after this many seconds
+RETRY_DELAY_SEC = 30
+MAX_RETRIES = 2
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  A+B: Build pre-injected data cache from DB
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_data_cache_for_symbol(symbol: str) -> dict:
+    """Build a cache dict for one stock from the DB.
+
+    Returns keys like:
+        "get_fundamentals:AAPL"  -> formatted fundamentals string
+        "get_balance_sheet:AAPL" -> formatted balance sheet string
+        "get_cashflow:AAPL"      -> formatted cash flow string
+        "get_income_statement:AAPL" -> formatted income statement string
+        "get_news:AAPL"          -> formatted news string
+    """
+    cache: dict = {}
+    sym_upper = symbol.upper()
+
+    try:
+        cache.update(_build_financials_cache(sym_upper))
+    except Exception as e:
+        logger.warning(f"[DataCache] Failed to build financials cache for {sym_upper}: {e}")
+
+    try:
+        cache.update(_build_news_cache(sym_upper))
+    except Exception as e:
+        logger.warning(f"[DataCache] Failed to build news cache for {sym_upper}: {e}")
+
+    return cache
+
+
+def _build_financials_cache(symbol: str) -> dict:
+    """Format DB FinancialData into the same string format TA expects."""
+    from app.models.financial_data import FinancialData
+    from app.models.stock import Stock
+
+    stock = db_session.query(Stock).filter_by(symbol=symbol, is_active=True).first()
+    if not stock:
+        return {}
+
+    # Get last 8 quarters of financial data (2 years)
+    records = (
+        db_session.query(FinancialData)
+        .filter_by(stock_id=stock.id)
+        .order_by(FinancialData.fiscal_year.desc(), FinancialData.report_date.desc())
+        .limit(8)
+        .all()
+    )
+    if not records:
+        return {}
+
+    cache = {}
+
+    # ── get_fundamentals ──
+    latest = records[0]
+    fundamentals_lines = [
+        f"# Company Fundamentals for {symbol}",
+        f"# Data from DB (fiscal {latest.fiscal_year} {latest.period.value if latest.period else ''})",
+        "",
+    ]
+    info_map = {
+        "Name": stock.name,
+        "Sector": getattr(stock, 'sector', None),
+        "Market Cap": (stock.current_price * latest.shares_outstanding)
+                      if stock.current_price and latest.shares_outstanding else None,
+        "Revenue (TTM)": latest.revenue,
+        "Net Income": latest.net_income,
+        "Operating Income": latest.operating_income,
+        "R&D Expense": latest.rd_expense,
+        "Cash & Equivalents": latest.cash_and_equivalents,
+        "Total Assets": latest.total_assets,
+        "Total Equity": latest.total_equity,
+        "Shares Outstanding": latest.shares_outstanding,
+        "Operating Cash Flow": latest.operating_cash_flow,
+        "Capital Expenditure": latest.capital_expenditure,
+        "Dividends per Share": latest.dividends_per_share,
+    }
+    # Compute derived ratios
+    if latest.revenue and latest.revenue > 0:
+        if latest.net_income is not None:
+            info_map["Profit Margin"] = f"{latest.net_income / latest.revenue:.2%}"
+        if latest.operating_income is not None:
+            info_map["Operating Margin"] = f"{latest.operating_income / latest.revenue:.2%}"
+    if latest.total_equity and latest.total_equity > 0 and latest.net_income:
+        info_map["Return on Equity"] = f"{latest.net_income / latest.total_equity:.2%}"
+    if latest.total_assets and latest.total_assets > 0 and latest.net_income:
+        info_map["Return on Assets"] = f"{latest.net_income / latest.total_assets:.2%}"
+    if latest.total_equity and latest.total_equity > 0:
+        debt = (latest.short_term_borrowings or 0) + (latest.long_term_borrowings or 0)
+        info_map["Debt to Equity"] = f"{debt / latest.total_equity:.2f}"
+    if stock.current_price and latest.shares_outstanding and latest.net_income:
+        eps = latest.net_income / latest.shares_outstanding
+        if eps > 0:
+            info_map["PE Ratio (TTM)"] = f"{stock.current_price / eps:.2f}"
+            info_map["EPS (TTM)"] = f"{eps:.2f}"
+    if latest.operating_cash_flow and latest.capital_expenditure:
+        info_map["Free Cash Flow"] = latest.operating_cash_flow - abs(latest.capital_expenditure)
+
+    for label, value in info_map.items():
+        if value is not None:
+            fundamentals_lines.append(f"{label}: {value}")
+
+    cache[f"get_fundamentals:{symbol}"] = "\n".join(fundamentals_lines)
+
+    # ── get_balance_sheet / get_cashflow / get_income_statement ──
+    # Format as CSV-like tables similar to yfinance output
+    def _fmt_financial_table(records, fields, title):
+        header = f"# {title} for {symbol}\n# Periods: {len(records)} quarters\n\n"
+        # CSV header row = field names as columns, dates as rows
+        col_headers = ["Field"] + [
+            f"{r.fiscal_year}-{r.period.value if r.period else 'N/A'}" for r in records
+        ]
+        lines = [",".join(col_headers)]
+        for field_name, attr in fields:
+            row = [field_name]
+            for r in records:
+                val = getattr(r, attr, None)
+                row.append(str(val) if val is not None else "")
+            lines.append(",".join(row))
+        return header + "\n".join(lines)
+
+    balance_fields = [
+        ("Cash And Equivalents", "cash_and_equivalents"),
+        ("Accounts Receivable", "accounts_receivable"),
+        ("Inventory", "inventory"),
+        ("Investments", "investments"),
+        ("Accounts Payable", "accounts_payable"),
+        ("Short Term Borrowings", "short_term_borrowings"),
+        ("Long Term Borrowings", "long_term_borrowings"),
+        ("Total Assets", "total_assets"),
+        ("Total Equity", "total_equity"),
+        ("Non Current Assets", "non_current_assets"),
+        ("Current Liabilities", "current_liabilities"),
+    ]
+    cache[f"get_balance_sheet:{symbol}"] = _fmt_financial_table(
+        records, balance_fields, "Balance Sheet"
+    )
+
+    cashflow_fields = [
+        ("Operating Cash Flow", "operating_cash_flow"),
+        ("Capital Expenditure", "capital_expenditure"),
+    ]
+    cache[f"get_cashflow:{symbol}"] = _fmt_financial_table(
+        records, cashflow_fields, "Cash Flow Statement"
+    )
+
+    income_fields = [
+        ("Revenue", "revenue"),
+        ("Cost Of Revenue", "cost_of_revenue"),
+        ("Operating Income", "operating_income"),
+        ("Net Income", "net_income"),
+        ("Net Income To Parent", "net_income_to_parent"),
+        ("Selling Expense", "selling_expense"),
+        ("Admin Expense", "admin_expense"),
+        ("R&D Expense", "rd_expense"),
+        ("Finance Cost", "finance_cost"),
+    ]
+    cache[f"get_income_statement:{symbol}"] = _fmt_financial_table(
+        records, income_fields, "Income Statement"
+    )
+
+    return cache
+
+
+def _build_news_cache(symbol: str) -> dict:
+    """Format DB StockNewsAnalysis into the news string TA expects."""
+    from app.models.stock_news_analysis import StockNewsAnalysis
+
+    # Get the most recent analysis (within last 3 days)
+    cutoff = datetime.utcnow() - timedelta(days=3)
+    analysis = (
+        db_session.query(StockNewsAnalysis)
+        .filter(
+            StockNewsAnalysis.symbol == symbol,
+            StockNewsAnalysis.analyzed_at >= cutoff,
+        )
+        .order_by(StockNewsAnalysis.analyzed_at.desc())
+        .first()
+    )
+    if not analysis:
+        return {}
+
+    cache = {}
+
+    # Build news string from the stored analysis
+    news_lines = [
+        f"## {symbol} News Analysis (from DB, analyzed {analysis.analyzed_at.strftime('%Y-%m-%d')})",
+        "",
+        f"### Overall Sentiment: {analysis.sentiment}",
+        "",
+        f"### Summary",
+        analysis.summary or "No summary available.",
+        "",
+    ]
+
+    if analysis.key_events:
+        news_lines.append("### Key Events")
+        events = analysis.key_events if isinstance(analysis.key_events, list) else []
+        for evt in events:
+            if isinstance(evt, dict):
+                news_lines.append(f"- **{evt.get('event', 'N/A')}**: {evt.get('impact', '')}")
+            else:
+                news_lines.append(f"- {evt}")
+        news_lines.append("")
+
+    if analysis.principle_impacts:
+        news_lines.append("### Principle Impacts")
+        impacts = analysis.principle_impacts if isinstance(analysis.principle_impacts, list) else []
+        for imp in impacts:
+            if isinstance(imp, dict):
+                news_lines.append(f"- **{imp.get('principle', imp.get('area', 'N/A'))}**: {imp.get('impact', imp.get('description', ''))}")
+            else:
+                news_lines.append(f"- {imp}")
+        news_lines.append("")
+
+    if analysis.news_sources:
+        news_lines.append("### Sources")
+        sources = analysis.news_sources if isinstance(analysis.news_sources, list) else []
+        for src in sources[:5]:
+            if isinstance(src, dict):
+                news_lines.append(f"- {src.get('title', 'N/A')} (source: {src.get('source', 'Unknown')})")
+            else:
+                news_lines.append(f"- {src}")
+
+    news_text = "\n".join(news_lines)
+    cache[f"get_news:{symbol}"] = news_text
+
+    return cache
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Config helper
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _get_ta_config() -> dict:
     """
@@ -80,10 +330,25 @@ def _get_ta_config() -> dict:
     return config
 
 
-def run_ta_for_stock(symbol: str) -> dict:
+# ══════════════════════════════════════════════════════════════════════════════
+#  Per-stock runner (with data injection + retry)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Global throttle lock — ensures LAUNCH_INTERVAL_SEC between TA graph starts
+_launch_lock = threading.Lock()
+_last_launch_time = 0.0
+
+
+def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
     """
     Run TradingAgents for a single stock.
     Returns {'action': 'buy'/'sell'/'hold', 'reason': '...'}
+
+    Args:
+        symbol: Stock ticker
+        data_cache: Optional pre-built cache dict for this symbol.
+                    If provided, will be injected via inject_data_cache()
+                    so TA reads DB data instead of calling yfinance.
     """
     import os
     import sys
@@ -91,65 +356,154 @@ def run_ta_for_stock(symbol: str) -> dict:
         sys.path.insert(0, TRADINGAGENTS_PATH)
 
     from tradingagents.graph.trading_graph import TradingAgentsGraph
+    from tradingagents.dataflows.interface import inject_data_cache, clear_data_cache
 
     config = _get_ta_config()
     api_key = config.pop('api_key', None)
 
     today_str = date_type.today().strftime('%Y-%m-%d')
 
-    logger.info(f"[TradingAgents] 开始分析 {symbol} ...")
+    logger.info(f"[TA] 开始分析 {symbol} (缓存条目: {len(data_cache) if data_cache else 0})")
 
-    try:
-        # Set API key in environment before constructing the graph,
-        # because the LLM client factories read from env when no explicit key is passed.
-        env_key_name = None
-        old_env_val = None
-
-        if config['llm_provider'] == 'anthropic' and api_key:
-            env_key_name = 'ANTHROPIC_API_KEY'
-        elif config['llm_provider'] == 'openai' and api_key:
-            env_key_name = 'OPENAI_API_KEY'
-
-        if env_key_name and api_key:
-            old_env_val = os.environ.get(env_key_name)
-            os.environ[env_key_name] = api_key
-
+    for attempt in range(1, MAX_RETRIES + 2):
         try:
-            ta_graph = TradingAgentsGraph(config=config)
-            final_state, decision = ta_graph.propagate(symbol, today_str)
-        finally:
-            # Restore env
-            if env_key_name is not None:
-                if old_env_val is None:
-                    os.environ.pop(env_key_name, None)
-                else:
-                    os.environ[env_key_name] = old_env_val
+            # ── Throttle: enforce minimum interval between launches ──
+            global _last_launch_time
+            with _launch_lock:
+                now = time.time()
+                wait = LAUNCH_INTERVAL_SEC - (now - _last_launch_time)
+                if wait > 0:
+                    logger.info(f"[TA] {symbol} 等待 {wait:.1f}s (API限流)")
+                    time.sleep(wait)
+                _last_launch_time = time.time()
 
-        # decision is the processed signal: "BUY", "SELL", or "HOLD"
-        action = decision.strip().upper() if decision else 'HOLD'
-        if action not in ('BUY', 'SELL', 'HOLD'):
-            action = 'HOLD'
+            # ── Inject pre-cached data into this thread ──
+            if data_cache:
+                inject_data_cache(data_cache)
 
-        # Extract reason from the final trade decision text
-        reason = final_state.get('final_trade_decision', '') or ''
-        # Truncate to a reasonable length
-        if len(reason) > 500:
-            reason = reason[:500] + '...'
+            # ── Set API key in env ──
+            env_key_name = None
+            old_env_val = None
+            if config.get('llm_provider') == 'anthropic' and api_key:
+                env_key_name = 'ANTHROPIC_API_KEY'
+            elif config.get('llm_provider') == 'openai' and api_key:
+                env_key_name = 'OPENAI_API_KEY'
 
-        logger.info(f"[TradingAgents] {symbol} 决策: {action}")
-        return {'action': action.lower(), 'reason': reason}
+            if env_key_name and api_key:
+                old_env_val = os.environ.get(env_key_name)
+                os.environ[env_key_name] = api_key
 
-    except Exception as e:
-        logger.error(f"[TradingAgents] {symbol} 分析失败: {e}", exc_info=True)
-        return {'action': 'hold', 'reason': f'TradingAgents 分析失败: {str(e)[:200]}'}
+            try:
+                ta_graph = TradingAgentsGraph(config=config)
+                final_state, decision = ta_graph.propagate(symbol, today_str)
+            finally:
+                # Restore env
+                if env_key_name is not None:
+                    if old_env_val is None:
+                        os.environ.pop(env_key_name, None)
+                    else:
+                        os.environ[env_key_name] = old_env_val
+                # Always clear cache after use
+                clear_data_cache()
+
+            # Parse decision
+            action = decision.strip().upper() if decision else 'HOLD'
+            if action not in ('BUY', 'SELL', 'HOLD'):
+                action = 'HOLD'
+
+            reason = final_state.get('final_trade_decision', '') or ''
+            if len(reason) > 500:
+                reason = reason[:500] + '...'
+
+            logger.info(f"[TA] {symbol} 决策: {action}")
+            return {'action': action.lower(), 'reason': reason}
+
+        except Exception as e:
+            err_str = str(e).lower()
+            is_rate_limit = any(kw in err_str for kw in [
+                'rate_limit', 'rate limit', '429', 'too many requests',
+                'overloaded', 'timeout', 'timed out',
+            ])
+
+            if is_rate_limit and attempt <= MAX_RETRIES:
+                wait = RETRY_DELAY_SEC * attempt
+                logger.warning(
+                    f"[TA] {symbol} 第{attempt}次失败 (限流/超时), "
+                    f"{wait}s 后重试: {str(e)[:100]}"
+                )
+                time.sleep(wait)
+                continue
+            else:
+                logger.error(f"[TA] {symbol} 分析失败 (尝试 {attempt}): {e}", exc_info=True)
+                return {'action': 'hold', 'reason': f'TradingAgents 分析失败: {str(e)[:200]}'}
+
+    return {'action': 'hold', 'reason': 'TradingAgents 分析失败: 超过最大重试次数'}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Holdings & Cash helpers (unchanged)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _init_ta_holdings_from_user():
+    """
+    如果 TA 没有任何交易记录，用用户当前持仓初始化 TA 持仓。
+    只执行一次（首次调用时）。
+    同时保存 ta_starting_cash，使 TA 起始资产 == 用户真实资产。
+    """
+    from app.models.ai_trade_record import AiTradeRecord
+    from app.models.user_setting import UserSetting
+    from app.services.portfolio_service import compute_holdings, compute_user_cash
+    from datetime import timedelta
+
+    existing = db_session.query(AiTradeRecord).filter_by(trader=TRADER_NAME).first()
+    if existing:
+        return  # 已有记录，不需要初始化
+
+    user_holdings = compute_holdings()
+    if not user_holdings:
+        return
+
+    yesterday = date_type.today() - timedelta(days=1)
+    ta_buy_total = 0.0
+    for h in user_holdings:
+        shares = h.get('net_shares', 0)
+        price = h.get('avg_cost', 0) or h.get('current_price', 0)
+        if shares <= 0 or price <= 0:
+            continue
+        record = AiTradeRecord(
+            symbol=h['symbol'],
+            action='buy',
+            shares=shares,
+            price=price,
+            trade_date=yesterday,
+            reason='初始化：与用户持仓同步',
+            trader=TRADER_NAME,
+        )
+        db_session.add(record)
+        ta_buy_total += shares * price
+
+    # 保存 ta_starting_cash = user_cash + ta_buy_total
+    user_cash = compute_user_cash()
+    ta_starting_cash = round(user_cash + ta_buy_total, 2)
+    row = db_session.query(UserSetting).filter_by(key='ta_starting_cash').first()
+    if row:
+        row.value = str(ta_starting_cash)
+    else:
+        db_session.add(UserSetting(key='ta_starting_cash', value=str(ta_starting_cash)))
+
+    db_session.commit()
+    logger.info(f"[TA] 从用户持仓初始化 {len(user_holdings)} 条记录, ta_starting_cash={ta_starting_cash:.2f}")
 
 
 def compute_ta_holdings() -> Dict[str, Dict]:
     """
     Compute TradingAgents holdings from AiTradeRecord where trader='tradingagents'.
+    首次调用时自动从用户持仓初始化。
     Returns { "AAPL": {"shares": 50, "avg_cost": 150.5}, ... }
     """
     from app.models.ai_trade_record import AiTradeRecord
+
+    _init_ta_holdings_from_user()
 
     records = (
         db_session.query(AiTradeRecord)
@@ -218,11 +572,20 @@ def compute_ta_cash() -> float:
     return round(cash, 2)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  Main entry: generate trades (with parallel execution)
+# ══════════════════════════════════════════════════════════════════════════════
+
 def generate_ta_trades() -> dict:
     """
     Run TradingAgents for all in-pool stocks, determine position sizing,
     save records to AiTradeRecord with trader='tradingagents'.
     Returns { "AAPL": {"action": "buy", "shares": 10, "reason": "..."}, ... }
+
+    Optimizations (v2):
+      - Pre-builds data cache from DB for each symbol (financials + news)
+      - Runs analyses in parallel with ThreadPoolExecutor
+      - Throttles launches and retries on rate-limit errors
     """
     from app.models.ai_trade_record import AiTradeRecord
     from app.models.stock import Stock
@@ -242,7 +605,7 @@ def generate_ta_trades() -> dict:
         .all()
     )
     if today_records:
-        logger.info("[TradingAgents] 今日已执行过，返回已有记录")
+        logger.info("[TA] 今日已执行过，返回已有记录")
         return {
             r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
             for r in today_records if r.action in ('buy', 'sell')
@@ -251,11 +614,11 @@ def generate_ta_trades() -> dict:
     # 2. Get all in-pool stock symbols
     stocks = db_session.query(Stock).filter_by(in_pool=True, is_active=True).all()
     if not stocks:
-        logger.warning("[TradingAgents] 股票池为空，跳过")
+        logger.warning("[TA] 股票池为空，跳过")
         return {}
 
     symbols = [s.symbol for s in stocks]
-    logger.info(f"[TradingAgents] 股票池: {symbols}")
+    logger.info(f"[TA] 股票池 ({len(symbols)}): {symbols}")
 
     # Build price map from current stock prices
     price_map = {}
@@ -269,15 +632,53 @@ def generate_ta_trades() -> dict:
     if ta_cash < 0:
         ta_cash = 0
 
-    logger.info(f"[TradingAgents] 可用现金: ${ta_cash:,.2f}, 当前持仓: {list(ta_holdings.keys())}")
+    logger.info(f"[TA] 可用现金: ${ta_cash:,.2f}, 当前持仓: {list(ta_holdings.keys())}")
 
-    # 4. For each symbol, call run_ta_for_stock()
-    decisions = {}
-    for i, symbol in enumerate(symbols, 1):
-        logger.info(f"[TradingAgents] 分析进度 {i}/{len(symbols)}: {symbol}")
-        decisions[symbol] = run_ta_for_stock(symbol)
+    # 4. Pre-build data caches for ALL symbols (fast, DB-only, no API calls)
+    symbol_caches: Dict[str, dict] = {}
+    for sym in symbols:
+        try:
+            symbol_caches[sym] = _build_data_cache_for_symbol(sym)
+            cached_keys = list(symbol_caches[sym].keys())
+            logger.info(f"[TA] {sym} 预缓存: {len(cached_keys)} 条 ({cached_keys})")
+        except Exception as e:
+            logger.warning(f"[TA] {sym} 预缓存构建失败: {e}")
+            symbol_caches[sym] = {}
 
-    # 5. Position sizing
+    total_cached = sum(len(v) for v in symbol_caches.values())
+    logger.info(f"[TA] 预缓存完成: {total_cached} 条数据条目 (省去对应数量的外部API调用)")
+
+    # 5. Parallel analysis with ThreadPoolExecutor
+    decisions: Dict[str, dict] = {}
+    completed = 0
+
+    def _run_one(sym):
+        return sym, run_ta_for_stock(sym, data_cache=symbol_caches.get(sym))
+
+    workers = min(MAX_WORKERS, len(symbols))
+    logger.info(f"[TA] 启动并行分析: {workers} 个并发线程")
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_run_one, sym): sym for sym in symbols}
+
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                sym_result, decision = future.result()
+                decisions[sym_result] = decision
+                completed += 1
+                logger.info(
+                    f"[TA] 完成 {completed}/{len(symbols)}: "
+                    f"{sym_result} -> {decision['action']}"
+                )
+            except Exception as e:
+                decisions[sym] = {'action': 'hold', 'reason': f'并行执行异常: {str(e)[:200]}'}
+                completed += 1
+                logger.error(f"[TA] {sym} 并行执行异常: {e}", exc_info=True)
+
+    logger.info(f"[TA] 全部分析完成: {len(decisions)} 只股票")
+
+    # 6. Position sizing
     current_position_count = len(ta_holdings)
     remaining_slots = max(0, MAX_POSITIONS - current_position_count)
 
@@ -320,7 +721,7 @@ def generate_ta_trades() -> dict:
             'shares': shares,
             'reason': decisions[symbol].get('reason', ''),
         }
-        logger.info(f"[TradingAgents] SELL {symbol}: {shares} 股 @ ${price:.2f}")
+        logger.info(f"[TA] SELL {symbol}: {shares} 股 @ ${price:.2f}")
 
     # Recalculate slots after sells
     remaining_slots_after_sell = remaining_slots + len(sell_candidates)
@@ -335,12 +736,12 @@ def generate_ta_trades() -> dict:
             break
         price = price_map.get(symbol, 0)
         if price <= 0:
-            logger.warning(f"[TradingAgents] {symbol} 无价格数据，跳过买入")
+            logger.warning(f"[TA] {symbol} 无价格数据，跳过买入")
             continue
         # Calculate shares: allocate cash_per_slot, buy whole shares
         max_shares = int(cash_per_slot / price) if price > 0 else 0
         if max_shares <= 0:
-            logger.warning(f"[TradingAgents] {symbol} 现金不足买入1股，跳过")
+            logger.warning(f"[TA] {symbol} 现金不足买入1股，跳过")
             continue
         # Validate against available cash
         cost = max_shares * price
@@ -367,9 +768,9 @@ def generate_ta_trades() -> dict:
             'shares': max_shares,
             'reason': decisions[symbol].get('reason', ''),
         }
-        logger.info(f"[TradingAgents] BUY {symbol}: {max_shares} 股 @ ${price:.2f}")
+        logger.info(f"[TA] BUY {symbol}: {max_shares} 股 @ ${price:.2f}")
 
-    # 8. If no trades, save _HOLD record
+    # 7. If no trades, save _HOLD record
     if not valid_trades:
         db_session.add(AiTradeRecord(
             trader=TRADER_NAME,
@@ -380,14 +781,14 @@ def generate_ta_trades() -> dict:
             trade_date=today,
             reason='TradingAgents 今日无操作：所有股票建议持有或条件不满足',
         ))
-        logger.info("[TradingAgents] 今日无交易")
+        logger.info("[TA] 今日无交易")
 
     try:
         db_session.commit()
-        logger.info(f"[TradingAgents] 保存 {len(valid_trades)} 条交易记录")
+        logger.info(f"[TA] 保存 {len(valid_trades)} 条交易记录")
     except Exception as e:
         db_session.rollback()
-        logger.error(f"[TradingAgents] 保存交易记录失败: {e}")
+        logger.error(f"[TA] 保存交易记录失败: {e}")
         return {}
 
     return valid_trades
