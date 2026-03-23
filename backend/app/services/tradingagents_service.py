@@ -552,19 +552,29 @@ _last_launch_time = 0.0
 # Lock for _ta_progress to prevent race conditions across threads
 _progress_lock = threading.Lock()
 
-# Global progress tracker for TA analysis (polled by frontend)
-_ta_progress = {
-    'running': False,
-    'completed': 0,
-    'total': 0,
-    'current_symbol': '',
-    'results': {},  # symbol -> action
-}
+# Progress file path (shared across Gunicorn workers via filesystem)
+import json as _json
+import tempfile
+_PROGRESS_FILE = os.path.join(tempfile.gettempdir(), 'ta_progress.json')
+
+
+def _save_progress(data: dict):
+    """Save progress to a temp file (readable by any Gunicorn worker)."""
+    with _progress_lock:
+        try:
+            with open(_PROGRESS_FILE, 'w') as f:
+                _json.dump(data, f)
+        except Exception:
+            pass
+
 
 def get_ta_progress() -> dict:
-    """Return current TA analysis progress (for polling endpoint)."""
-    with _progress_lock:
-        return dict(_ta_progress)
+    """Return current TA analysis progress (from shared temp file)."""
+    try:
+        with open(_PROGRESS_FILE, 'r') as f:
+            return _json.load(f)
+    except (FileNotFoundError, _json.JSONDecodeError, Exception):
+        return {'running': False, 'completed': 0, 'total': 0, 'current_symbol': '', 'results': {}}
 
 
 def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
@@ -882,16 +892,15 @@ def generate_ta_trades() -> dict:
     decisions: Dict[str, dict] = {}
     completed = 0
 
-    with _progress_lock:
-        _ta_progress['running'] = True
-        _ta_progress['completed'] = 0
-        _ta_progress['total'] = len(symbols)
-        _ta_progress['current_symbol'] = ''
-        _ta_progress['results'] = {}
+    _progress = {
+        'running': True, 'completed': 0, 'total': len(symbols),
+        'current_symbol': '', 'results': {},
+    }
+    _save_progress(_progress)
 
     def _run_one(sym):
-        with _progress_lock:
-            _ta_progress['current_symbol'] = sym
+        _progress['current_symbol'] = sym
+        _save_progress(_progress)
         return sym, run_ta_for_stock(sym, data_cache=symbol_caches.get(sym))
 
     workers = min(MAX_WORKERS, len(symbols))
@@ -907,9 +916,9 @@ def generate_ta_trades() -> dict:
                     sym_result, decision = future.result()
                     decisions[sym_result] = decision
                     completed += 1
-                    with _progress_lock:
-                        _ta_progress['completed'] = completed
-                        _ta_progress['results'][sym_result] = decision['action']
+                    _progress['completed'] = completed
+                    _progress['results'][sym_result] = decision['action']
+                    _save_progress(_progress)
                     logger.info(
                         f"[TA] 完成 {completed}/{len(symbols)}: "
                         f"{sym_result} -> {decision['action']}"
@@ -917,13 +926,13 @@ def generate_ta_trades() -> dict:
                 except Exception as e:
                     decisions[sym] = {'action': 'hold', 'reason': f'并行执行异常: {str(e)[:200]}'}
                     completed += 1
-                    with _progress_lock:
-                        _ta_progress['completed'] = completed
-                        _ta_progress['results'][sym] = 'error'
+                    _progress['completed'] = completed
+                    _progress['results'][sym] = 'error'
+                    _save_progress(_progress)
                     logger.error(f"[TA] {sym} 并行执行异常: {e}", exc_info=True)
     finally:
-        with _progress_lock:
-            _ta_progress['running'] = False
+        _progress['running'] = False
+        _save_progress(_progress)
 
     logger.info(f"[TA] 全部分析完成: {len(decisions)} 只股票")
 
