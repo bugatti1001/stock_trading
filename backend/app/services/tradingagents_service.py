@@ -283,20 +283,10 @@ def _build_global_news_cache() -> dict:
     The cache key "get_global_news" matches the lookup in interface.py
     so all stocks share the same global news without re-fetching.
     """
-    from datetime import datetime, timedelta
     cache: dict = {}
 
     try:
         curr_date = datetime.now().strftime("%Y-%m-%d")
-
-        # Try to get global news from yfinance (one-time fetch)
-        import sys, os
-        TRADINGAGENTS_PATH = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            '..', 'claude_projects', 'TradingAgents'
-        )
-        if TRADINGAGENTS_PATH not in sys.path:
-            sys.path.insert(0, TRADINGAGENTS_PATH)
 
         from tradingagents.dataflows.yfinance_news import get_global_news_yfinance
         global_news_text = get_global_news_yfinance(curr_date, look_back_days=7, limit=10)
@@ -506,10 +496,6 @@ def _get_ta_config() -> dict:
     Build TradingAgents config using the user's current AI provider/key.
     Uses lazy imports to avoid circular dependencies.
     """
-    import sys
-    if TRADINGAGENTS_PATH not in sys.path:
-        sys.path.insert(0, TRADINGAGENTS_PATH)
-
     from tradingagents.default_config import DEFAULT_CONFIG
     from app.config.settings import (
         get_ai_provider, get_anthropic_key, get_minimax_key,
@@ -592,11 +578,6 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
                     If provided, will be injected via inject_data_cache()
                     so TA reads DB data instead of calling yfinance.
     """
-    import os
-    import sys
-    if TRADINGAGENTS_PATH not in sys.path:
-        sys.path.insert(0, TRADINGAGENTS_PATH)
-
     from tradingagents.graph.trading_graph import TradingAgentsGraph
     from tradingagents.dataflows.interface import inject_data_cache, clear_data_cache
 
