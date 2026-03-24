@@ -516,7 +516,8 @@ def _get_ta_config() -> dict:
     provider = get_ai_provider()
 
     # Ensure enough output tokens for complete multi-agent analysis reports
-    config['max_tokens'] = 8192
+    # Risk Judge writes detailed final decisions (~5000-8000 chars); 8192 truncates them
+    config['max_tokens'] = 16384
 
     if provider == 'claude':
         api_key = get_anthropic_key()
@@ -814,7 +815,7 @@ def compute_ta_cash() -> float:
 #  Main entry: generate trades (with parallel execution)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_ta_trades() -> dict:
+def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
     """
     Run TradingAgents for all in-pool stocks, determine position sizing,
     save records to AiTradeRecord with trader='tradingagents'.
@@ -849,10 +850,16 @@ def generate_ta_trades() -> dict:
             for r in today_records if r.action in ('buy', 'sell')
         }
 
-    # 2. Get all in-pool stock symbols
-    stocks = db_session.query(Stock).filter_by(in_pool=True, is_active=True).all()
+    # 2. Get stock symbols (selected or all in-pool)
+    if selected_symbols:
+        stocks = db_session.query(Stock).filter(
+            Stock.symbol.in_([s.upper() for s in selected_symbols]),
+            Stock.in_pool == True,
+        ).all()
+    else:
+        stocks = db_session.query(Stock).filter_by(in_pool=True, is_active=True).all()
     if not stocks:
-        logger.warning("[TA] 股票池为空，跳过")
+        logger.warning("[TA] 无股票可分析")
         return {}
 
     symbols = [s.symbol for s in stocks]

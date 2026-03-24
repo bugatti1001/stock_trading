@@ -398,7 +398,9 @@ def ta_trades():
             )
 
         from app.services.tradingagents_service import generate_ta_trades
-        trades = generate_ta_trades()
+        data = request.get_json(silent=True) or {}
+        selected_symbols = data.get('symbols')  # Optional list like ["AAPL", "GOOG"]
+        trades = generate_ta_trades(selected_symbols=selected_symbols)
         return success_response(trades=trades)
     except Exception as e:
         logger.error(f"ta_trades 错误: {e}", exc_info=True)
