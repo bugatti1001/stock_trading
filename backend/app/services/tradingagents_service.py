@@ -515,6 +515,9 @@ def _get_ta_config() -> dict:
 
     provider = get_ai_provider()
 
+    # Ensure enough output tokens for complete multi-agent analysis reports
+    config['max_tokens'] = 8192
+
     if provider == 'claude':
         api_key = get_anthropic_key()
         config['llm_provider'] = 'anthropic'
