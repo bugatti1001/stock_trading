@@ -849,9 +849,10 @@ async function loadTaTradeHistory() {
                 <td>$${t.price?.toFixed(2) || '0'}</td>
                 <td>$${t.amount?.toLocaleString('en-US', {maximumFractionDigits: 0}) || '0'}</td>
                 <td style="max-width:400px">
-                    <small class="ta-reason-short" id="${reasonId}-short">${reasonShort}</small>
-                    ${hasLong ? `<a href="#" class="small text-primary ms-1" onclick="event.preventDefault();document.getElementById('${reasonId}-short').style.display='none';document.getElementById('${reasonId}-full').style.display='block';this.style.display='none'">[展开]</a>
-                    <small class="ta-reason-full" id="${reasonId}-full" style="display:none;white-space:pre-wrap">${(t.reason || '').replace(/</g,'&lt;')}</small>` : ''}
+                    <small id="${reasonId}-short">${reasonShort}</small>
+                    ${hasLong ? `<a href="#" class="small text-primary ms-1" id="${reasonId}-expand" onclick="event.preventDefault();document.getElementById('${reasonId}-short').style.display='none';document.getElementById('${reasonId}-full').style.display='block';this.style.display='none';document.getElementById('${reasonId}-collapse').style.display=''">[展开]</a>
+                    <small id="${reasonId}-full" style="display:none;white-space:pre-wrap">${(t.reason || '').replace(/</g,'&lt;')}</small>
+                    <a href="#" class="small text-primary ms-1" id="${reasonId}-collapse" style="display:none" onclick="event.preventDefault();document.getElementById('${reasonId}-short').style.display='';document.getElementById('${reasonId}-full').style.display='none';this.style.display='none';document.getElementById('${reasonId}-expand').style.display=''">[收起]</a>` : ''}
                 </td>
             </tr>`;
         }).join('');
