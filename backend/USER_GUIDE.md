@@ -9,7 +9,8 @@
 3. 输入 AI API Key（至少填一个）：
    - **Claude API Key**（格式：`sk-ant-api03-...`）— 可在 [Anthropic Console](https://console.anthropic.com/) 获取
    - **MiniMax API Key**（可选）— 用于切换到 MiniMax M2.5 模型
-   - 没有任何 API Key，所有 AI 功能将无法使用
+   - **Finnhub API Key**（可选）— 用于美股新闻获取，留空则使用服务器默认配置。可在 [Finnhub](https://finnhub.io/) 免费注册获取
+   - 没有任何 AI API Key，所有 AI 功能将无法使用
 
 > API Key 会持久保存在你的个人数据库中，只需输入一次。再次登录时输入新 Key 会覆盖旧值；不输入则保留之前的。
 
@@ -305,7 +306,7 @@ AI 返回：
 | 雪球 (Xueqiu) | 美股 / A 股 / 港股 | 股票搜索、行情、财务数据（优先） |
 | Yahoo Finance | 美股为主 | 行情、财务数据（备选） |
 | SEC EDGAR | 美股 | 年报 10-K/10-Q 文件 |
-| Finnhub | 美股 | 新闻数据 |
+| Finnhub | 美股 | 新闻数据（需要 API Key，登录时可填写或使用服务器默认） |
 | 东方财富 | A 股 / 港股 | 新闻数据 |
 | macrotrends / stockanalysis | 美股 | AI 补全时抓取财务数据 |
 
