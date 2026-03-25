@@ -83,7 +83,15 @@
                                placeholder="eyJ...">
                     </div>
                 </div>
-                <p class="text-muted small mb-3">至少填写一个 API Key；如已保存过可留空</p>
+                <div class="mb-3">
+                    <label for="finnhub_api_key" class="form-label">Finnhub API Key <span class="text-muted">(可选)</span></label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-key"></i></span>
+                        <input type="password" class="form-control" id="finnhub_api_key" name="finnhub_api_key"
+                               placeholder="留空则使用服务器默认配置">
+                    </div>
+                </div>
+                <p class="text-muted small mb-3">至少填写一个 AI API Key；如已保存过可留空。Finnhub Key 用于美股新闻，不填则用服务器默认值。</p>
                 <button type="submit" class="btn btn-primary w-100">
                     <i class="bi bi-box-arrow-in-right"></i> 登录
                 </button>
