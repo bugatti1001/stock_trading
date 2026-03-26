@@ -512,8 +512,10 @@ function openTaStockPicker() {
     const rows = document.querySelectorAll('#scoreTableBody tr');
     let stocks = [];
     rows.forEach(row => {
-        const sym = row.querySelector('td:nth-child(2)')?.textContent?.trim();
-        const name = row.querySelector('td:nth-child(2)')?.getAttribute('title') || '';
+        const link = row.querySelector('td:first-child a');
+        const sym = link?.textContent?.trim();
+        const nameEl = row.querySelector('td:first-child small.text-muted');
+        const name = nameEl?.textContent?.trim() || '';
         if (sym && sym !== '-') stocks.push({symbol: sym, name: name});
     });
     // Fallback: if score table is empty, fetch from API
@@ -765,13 +767,14 @@ function renderScoreTable(scores) {
         // AI 交易建议列
         const aiTrade = (window._aiTrades || {})[s.symbol];
         let aiTradeCell = '<span class="text-muted">-</span>';
-        if (aiTrade) {
+        if (aiTrade && aiTrade.shares > 0) {
             const isBuy = aiTrade.action === 'buy';
             const color = isBuy ? 'success' : 'danger';
             const icon = isBuy ? 'cart-plus' : 'cart-dash';
             const label = isBuy ? '买入' : '卖出';
+            const sharesDisplay = Number.isInteger(aiTrade.shares) ? aiTrade.shares : aiTrade.shares.toFixed(2);
             aiTradeCell = `<span class="badge bg-${color}" style="cursor:help" title="${aiTrade.reason || ''}">
-                <i class="bi bi-${icon}"></i> ${label} ${aiTrade.shares}股</span>`;
+                <i class="bi bi-${icon}"></i> ${label} ${sharesDisplay}股</span>`;
         }
 
         // TA 交易建议列
