@@ -1083,7 +1083,7 @@ AI可用现金: ${ai_available_cash:,.0f}
                 if shares <= 0:
                     continue
                 ai_available_cash -= shares * price  # 扣减可用现金，防止后续买入超额
-            valid_trades[symbol] = trade
+            valid_trades[symbol] = {'action': action, 'shares': shares, 'reason': trade.get('reason', '')}
             record = AiTradeRecord(
                 symbol=symbol,
                 action=action,
