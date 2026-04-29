@@ -15,9 +15,13 @@ import json
 import os
 import re
 import logging
+import feedparser
+from html import unescape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, date
+from email.utils import parsedate_to_datetime
 from typing import List, Dict, Optional
+from urllib.parse import quote_plus
 
 import requests
 
@@ -27,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 FINNHUB_NEWS_ENDPOINT = 'https://finnhub.io/api/v1/company-news'
 EASTMONEY_SEARCH_ENDPOINT = 'https://search-api-web.eastmoney.com/search/jsonp'
+GOOGLE_NEWS_RSS_ENDPOINT = 'https://news.google.com/rss/search'
 
 # ── Server-side news cache ──────────────────────────────
 # Key: (symbol, 'YYYY-MM-DD')  Value: List[Dict]
@@ -146,6 +151,72 @@ def _search_stock_news_finnhub(symbol: str, stock_name: str = '',
         return []
     except Exception as e:
         logger.error(f"Finnhub unexpected error for {symbol}: {e}")
+        return []
+
+
+def _strip_html(value: str) -> str:
+    return unescape(re.sub(r'<[^>]+>', '', value or '')).replace('\xa0', ' ').strip()
+
+
+def _parse_rss_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _search_stock_news_google_rss(symbol: str, stock_name: str = '',
+                                  days_back: int = 7,
+                                  num_results: int = 8) -> List[Dict]:
+    """Fetch recent stock news from Google News RSS without an API key."""
+    query_parts = [symbol.upper(), 'stock']
+    if stock_name and stock_name.upper() != symbol.upper():
+        query_parts.append(stock_name)
+    query = ' '.join(query_parts)
+    url = (
+        f"{GOOGLE_NEWS_RSS_ENDPOINT}?q={quote_plus(query)}"
+        "&hl=en-US&gl=US&ceid=US:en"
+    )
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+
+    try:
+        feed = feedparser.parse(url)
+        news_list: List[Dict] = []
+
+        for entry in feed.entries:
+            published_dt = _parse_rss_datetime(entry.get('published'))
+            if published_dt and published_dt < cutoff:
+                continue
+
+            title = entry.get('title', 'Untitled')
+            source = ''
+            if ' - ' in title:
+                title, source = title.rsplit(' - ', 1)
+            source_info = entry.get('source')
+            if source_info and source_info.get('title'):
+                source = source_info.get('title')
+
+            news_list.append({
+                'title': title,
+                'snippet': _strip_html(entry.get('summary', ''))[:500],
+                'url': entry.get('link', ''),
+                'source': source or 'Google News',
+                'published_date': published_dt.strftime('%Y-%m-%d') if published_dt else None,
+                'stock_symbol': symbol.upper(),
+            })
+
+            if len(news_list) >= num_results:
+                break
+
+        logger.info(f"Google News RSS: fetched {len(news_list)} news items for {symbol}")
+        return news_list
+    except Exception as e:
+        logger.error(f"Google News RSS fetch failed for {symbol}: {e}")
         return []
 
 
@@ -278,9 +349,13 @@ def search_stock_news(symbol: str, stock_name: str = '',
     market = detect_market(symbol)
     if market == MARKET_US:
         raw = _search_stock_news_finnhub(symbol, stock_name, days_back, num_results)
+        if not raw:
+            raw = _search_stock_news_google_rss(symbol, stock_name, days_back, num_results)
     else:
         # CN and HK → Eastmoney
         raw = _search_stock_news_eastmoney(symbol, stock_name, days_back, num_results)
+        if not raw:
+            raw = _search_stock_news_google_rss(symbol, stock_name, days_back, num_results)
 
     logger.info(f"{symbol}: {len(raw)} news items fetched")
 

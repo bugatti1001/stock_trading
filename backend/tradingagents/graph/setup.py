@@ -197,13 +197,13 @@ class GraphSetup:
         # Debate nodes: use analyst_llm (Haiku) for cost savings
         # Only Research Manager & Risk Judge use deep_thinking_llm (Sonnet) for final decisions
         bull_researcher_node = _timed_node("Bull Researcher",
-            create_bull_researcher(self.analyst_llm, self.bull_memory))
+            create_bull_researcher(self.analyst_llm))
         bear_researcher_node = _timed_node("Bear Researcher",
-            create_bear_researcher(self.analyst_llm, self.bear_memory))
+            create_bear_researcher(self.analyst_llm))
         research_manager_node = _timed_node("Research Manager",
-            create_research_manager(self.deep_thinking_llm, self.invest_judge_memory))
+            create_research_manager(self.deep_thinking_llm))
         trader_node = _timed_node("Trader",
-            create_trader(self.analyst_llm, self.trader_memory))
+            create_trader(self.analyst_llm))
 
         # Risk debate nodes: Haiku for debaters, Sonnet for judge
         aggressive_analyst = _timed_node("Aggressive Analyst",
@@ -213,7 +213,7 @@ class GraphSetup:
         conservative_analyst = _timed_node("Conservative Analyst",
             create_conservative_debator(self.analyst_llm))
         risk_manager_node = _timed_node("Risk Judge",
-            create_risk_manager(self.deep_thinking_llm, self.risk_manager_memory))
+            create_portfolio_manager(self.deep_thinking_llm))
 
         # Report compressor: uses analyst_llm (cheap) to compress reports
         # before they get duplicated across 8 downstream nodes

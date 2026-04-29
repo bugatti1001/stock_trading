@@ -515,14 +515,17 @@ def _get_ta_config() -> dict:
     config['project_dir'] = writable_dir
     config['data_cache_dir'] = os.path.join(writable_dir, 'data_cache')
     config['results_dir'] = os.path.join(writable_dir, 'results')
+    config['memory_log_path'] = os.path.join(writable_dir, 'memory', 'decisions.md')
+    config['memory_log_max_entries'] = 200
+    try:
+        from app.config.database import get_current_db_path
+        config['stock_analysis_db_path'] = get_current_db_path()
+    except Exception:
+        pass
     os.makedirs(config['data_cache_dir'], exist_ok=True)
     os.makedirs(config['results_dir'], exist_ok=True)
 
     provider = get_ai_provider()
-
-    # Ensure enough output tokens for complete multi-agent analysis reports
-    # Risk Judge writes detailed final decisions (~5000-8000 chars); 8192 truncates them
-    config['max_tokens'] = 16384
 
     # Analyst LLM: use Haiku for data analysis (12x cheaper than Sonnet)
     # Debate/judge LLMs: keep Sonnet for quality reasoning
@@ -674,8 +677,12 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
                 clear_data_cache()
 
             # Parse decision
-            action = decision.strip().upper() if decision else 'HOLD'
-            if action not in ('BUY', 'SELL', 'HOLD'):
+            rating = decision.strip().upper() if decision else 'HOLD'
+            if rating in ('BUY', 'OVERWEIGHT'):
+                action = 'BUY'
+            elif rating in ('SELL', 'UNDERWEIGHT'):
+                action = 'SELL'
+            else:
                 action = 'HOLD'
 
             reason = (final_state or {}).get('final_trade_decision', '') or ''
@@ -955,6 +962,14 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
 
     logger.info(f"[TA] 可用现金: ${ta_cash:,.2f}, 当前持仓: {list(ta_holdings.keys())}")
 
+    # Reset progress before prefetching so the frontend never shows a stale
+    # previous run while the new selected-symbol run is still preparing data.
+    _progress = {
+        'running': True, 'completed': 0, 'total': len(symbols),
+        'current_symbol': '', 'results': {},
+    }
+    _save_progress(_progress)
+
     # 4a. Pre-fetch global news ONCE and share across all stocks
     global_news_cache = _build_global_news_cache()
 
@@ -977,12 +992,6 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
     # 5. Parallel analysis with ThreadPoolExecutor + progress tracking
     decisions: Dict[str, dict] = {}
     completed = 0
-
-    _progress = {
-        'running': True, 'completed': 0, 'total': len(symbols),
-        'current_symbol': '', 'results': {},
-    }
-    _save_progress(_progress)
 
     def _run_one(sym):
         _progress['current_symbol'] = sym
@@ -1018,6 +1027,7 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
                     logger.error(f"[TA] {sym} 并行执行异常: {e}", exc_info=True)
     finally:
         _progress['running'] = False
+        _progress['current_symbol'] = ''
         _save_progress(_progress)
 
     logger.info(f"[TA] 全部分析完成: {len(decisions)} 只股票")
@@ -1086,6 +1096,10 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
         max_shares = int(cash_per_slot / price) if price > 0 else 0
         if max_shares <= 0:
             logger.warning(f"[TA] {symbol} 现金不足买入1股，跳过")
+            decisions[symbol]['reason'] = (
+                f"TA建议买入，但模拟账户可用现金不足以买入1股（可用现金 ${available_cash:,.2f}）。\n\n"
+                + decisions[symbol].get('reason', '')
+            )
             continue
         # Validate against available cash
         cost = max_shares * price
@@ -1093,6 +1107,10 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
             max_shares = int(available_cash / price)
             cost = max_shares * price
         if max_shares <= 0:
+            decisions[symbol]['reason'] = (
+                f"TA建议买入，但模拟账户剩余现金不足以买入1股（可用现金 ${available_cash:,.2f}）。\n\n"
+                + decisions[symbol].get('reason', '')
+            )
             continue
 
         record = AiTradeRecord(

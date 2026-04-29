@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 from datetime import date, datetime, timezone
+from typing import Any
 from flask import Blueprint, request, Response, current_app
 from app.config.database import db_session
 from app.models.stock import Stock
@@ -35,6 +36,247 @@ def _to_date(v):
 def _get_stock_service() -> StockService:
     """延迟创建 StockService，避免模块级绑定 session"""
     return StockService(db_session)
+
+
+def _decode_upload_bytes(raw: bytes) -> str:
+    """Decode uploaded text files from common encodings."""
+    for encoding in ('utf-8-sig', 'utf-8', 'gb18030'):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode('utf-8', errors='replace')
+
+
+def _normalize_csv_key(key: str | None) -> str:
+    return (key or '').strip().lower().replace(' ', '_').replace('-', '_')
+
+
+def _csv_value(row: dict, aliases: tuple[str, ...]) -> str | None:
+    normalized = {
+        _normalize_csv_key(k): v
+        for k, v in row.items()
+        if k is not None
+    }
+    for alias in aliases:
+        value = normalized.get(_normalize_csv_key(alias))
+        if value is not None and str(value).strip() != '':
+            return str(value).strip()
+    return None
+
+
+def _parse_float_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    text = (
+        text.replace(',', '')
+        .replace('HK$', '')
+        .replace('$', '')
+        .replace('¥', '')
+        .replace('%', '')
+    )
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_int_value(value: Any) -> int | None:
+    number = _parse_float_value(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _parse_bool_value(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {'1', 'true', 'yes', 'y', 'on', '是', '真'}:
+        return True
+    if text in {'0', 'false', 'no', 'n', 'off', '否', '假'}:
+        return False
+    return None
+
+
+_CSV_ALIASES = {
+    'symbol': ('symbol', 'ticker', 'code', 'stock_code', '股票代码', '代码'),
+    'name': ('name', 'company', 'company_name', 'stock_name', '名称', '股票名称', '公司名称'),
+    'exchange': ('exchange', '交易所'),
+    'market': ('market', '市场'),
+    'currency': ('currency', '币种', '货币'),
+    'sector': ('sector', '板块', '行业大类'),
+    'industry': ('industry', 'industry_name', '行业'),
+    'description': ('description', '简介', '公司简介'),
+    'website': ('website', 'url', '官网'),
+    'market_cap': ('market_cap', 'marketcap', '市值'),
+    'ipo_date': ('ipo_date', 'ipo', '上市日期'),
+    'employees': ('employees', 'employee_count', '员工数'),
+    'current_price': ('current_price', 'price', 'last_price', '现价', '价格'),
+    'volume': ('volume', '成交量'),
+    'avg_volume': ('avg_volume', 'average_volume', '平均成交量'),
+    'pe_ratio': ('pe_ratio', 'pe', 'p/e', '市盈率'),
+    'pb_ratio': ('pb_ratio', 'pb', 'p/b', '市净率'),
+    'dividend_yield': ('dividend_yield', 'yield', '股息率'),
+    'eps': ('eps', '每股收益'),
+    'notes': ('notes', 'note', '备注'),
+    'is_active': ('is_active', 'active', '是否活跃'),
+}
+
+
+def _csv_has_symbol_header(fieldnames: list[str | None] | None) -> bool:
+    if not fieldnames:
+        return False
+    normalized = {_normalize_csv_key(f) for f in fieldnames if f}
+    return any(_normalize_csv_key(alias) in normalized for alias in _CSV_ALIASES['symbol'])
+
+
+def _parse_stock_csv(content: str) -> tuple[list[dict], list[dict]]:
+    """Parse stock-list CSV content into normalized stock rows."""
+    if not content.strip():
+        raise ValueError('CSV 文件为空')
+
+    dict_reader = csv.DictReader(io.StringIO(content))
+    has_header = _csv_has_symbol_header(dict_reader.fieldnames)
+
+    if has_header:
+        raw_rows = list(dict_reader)
+        first_row_number = 2
+    else:
+        raw_rows = []
+        for cols in csv.reader(io.StringIO(content)):
+            if not any(str(c).strip() for c in cols):
+                continue
+            raw_rows.append({
+                'symbol': cols[0].strip() if len(cols) >= 1 else '',
+                'name': cols[1].strip() if len(cols) >= 2 else '',
+            })
+        first_row_number = 1
+
+    parsed: list[dict] = []
+    skipped: list[dict] = []
+    seen: set[str] = set()
+
+    for offset, row in enumerate(raw_rows):
+        row_number = first_row_number + offset
+        raw_symbol = _csv_value(row, _CSV_ALIASES['symbol'])
+        if not raw_symbol:
+            skipped.append({'row': row_number, 'error': '缺少股票代码'})
+            continue
+
+        symbol, err = validate_symbol(raw_symbol)
+        if err:
+            skipped.append({'row': row_number, 'symbol': raw_symbol, 'error': '无效股票代码格式'})
+            continue
+        if symbol in seen:
+            skipped.append({'row': row_number, 'symbol': symbol, 'error': '重复股票代码'})
+            continue
+        seen.add(symbol)
+
+        values: dict[str, Any] = {}
+        for field, aliases in _CSV_ALIASES.items():
+            if field == 'symbol':
+                continue
+            value = _csv_value(row, aliases)
+            if value is not None:
+                values[field] = value
+
+        for field in ('market_cap', 'current_price', 'volume', 'avg_volume',
+                      'pe_ratio', 'pb_ratio', 'dividend_yield', 'eps'):
+            if field in values:
+                values[field] = _parse_float_value(values[field])
+        if 'employees' in values:
+            values['employees'] = _parse_int_value(values['employees'])
+        if 'ipo_date' in values:
+            values['ipo_date'] = _to_date(values['ipo_date'])
+        if 'is_active' in values:
+            parsed_bool = _parse_bool_value(values['is_active'])
+            values['is_active'] = True if parsed_bool is None else parsed_bool
+        if 'market' in values and values['market']:
+            values['market'] = str(values['market']).strip().upper()
+        if 'currency' in values and values['currency']:
+            values['currency'] = str(values['currency']).strip().upper()
+
+        parsed.append({'symbol': symbol, 'values': values})
+
+    return parsed, skipped
+
+
+def _import_stock_csv(content: str) -> tuple:
+    """Import a CSV stock list by adding/updating stocks without deleting existing data."""
+    from app.utils.market_utils import (
+        detect_market,
+        get_currency_for_symbol,
+        get_exchange_for_symbol,
+    )
+
+    try:
+        rows, skipped = _parse_stock_csv(content)
+    except ValueError as e:
+        return error_response(str(e), 400)
+
+    if not rows:
+        return error_response('CSV 未找到可导入的股票代码', 400, data={'skipped': skipped})
+
+    created = 0
+    updated = 0
+    stock_fields = {c.name for c in Stock.__table__.columns} - {'id', 'symbol', 'created_at', 'updated_at'}
+
+    for item in rows:
+        symbol = item['symbol']
+        values = {
+            k: v for k, v in item['values'].items()
+            if k in stock_fields and v is not None
+        }
+
+        stock = db_session.query(Stock).filter_by(symbol=symbol).first()
+        if stock:
+            for field, value in values.items():
+                setattr(stock, field, value)
+            stock.in_pool = True
+            if 'is_active' not in values:
+                stock.is_active = True
+            updated += 1
+            continue
+
+        market = values.get('market') or detect_market(symbol)
+        currency = values.get('currency') or get_currency_for_symbol(symbol)
+        exchange = values.get('exchange') or get_exchange_for_symbol(symbol)
+        stock = Stock(
+            symbol=symbol,
+            name=values.pop('name', None) or symbol,
+            market=market,
+            currency=currency,
+            exchange=exchange,
+            in_pool=True,
+            is_active=values.pop('is_active', True),
+        )
+        for field, value in values.items():
+            if field not in {'market', 'currency', 'exchange'}:
+                setattr(stock, field, value)
+        db_session.add(stock)
+        created += 1
+
+    db_session.commit()
+    imported = created + updated
+    return success_response(
+        data={
+            'imported': imported,
+            'created': created,
+            'updated': updated,
+            'skipped': skipped,
+        },
+        message=f'CSV 导入完成：新增 {created} 只，更新 {updated} 只，跳过 {len(skipped)} 行',
+    )
 
 
 @bp.route('/', methods=['GET'])
@@ -579,25 +821,50 @@ def export_stocks() -> Response:
 
 @bp.route('/import', methods=['POST'])
 def import_stocks() -> Response:
-    """导入 JSON 文件替换当前股票池"""
+    """导入股票池文件。JSON 为替换模式，CSV 为新增/更新模式。"""
     try:
         f = request.files.get('file')
         if not f:
             return error_response('未上传文件', 400)
-        if not f.filename.endswith('.json'):
-            return error_response('仅支持 JSON 文件', 400)
+        filename = (f.filename or '').lower()
+        if not (filename.endswith('.json') or filename.endswith('.csv')):
+            return error_response('仅支持 JSON 或 CSV 文件', 400)
+
+        raw = f.read()
+        content = _decode_upload_bytes(raw)
+
+        if filename.endswith('.csv'):
+            return _import_stock_csv(content)
 
         try:
-            data = json.loads(f.read().decode('utf-8'))
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
             return error_response(f'JSON 解析失败: {e}', 400)
 
         stocks_data = data.get('stocks')
         if not isinstance(stocks_data, list):
             return error_response('JSON 格式错误：缺少 stocks 数组', 400)
 
-        # Replace mode: delete all in-pool stocks and their related data
-        old_stock_ids = [s.id for s in db_session.query(Stock.id).filter(Stock.in_pool.is_(True)).all()]
+        import_symbols = set()
+        duplicate_symbols = set()
+        for sd in stocks_data:
+            symbol = str(sd.get('symbol', '')).strip().upper() if isinstance(sd, dict) else ''
+            if not symbol:
+                return error_response('JSON 格式错误：每只股票必须包含 symbol', 400)
+            if symbol in import_symbols:
+                duplicate_symbols.add(symbol)
+            import_symbols.add(symbol)
+        if duplicate_symbols:
+            return error_response(f'JSON 中存在重复股票代码: {", ".join(sorted(duplicate_symbols))}', 400)
+
+        # Replace mode: delete all in-pool stocks plus soft-deleted duplicates
+        old_stock_ids = {
+            s.id for s in db_session.query(Stock.id).filter(Stock.in_pool.is_(True)).all()
+        }
+        if import_symbols:
+            old_stock_ids.update(
+                s.id for s in db_session.query(Stock.id).filter(Stock.symbol.in_(import_symbols)).all()
+            )
         if old_stock_ids:
             db_session.query(FinancialData).filter(FinancialData.stock_id.in_(old_stock_ids)).delete(synchronize_session=False)
             db_session.query(AnnualReport).filter(AnnualReport.stock_id.in_(old_stock_ids)).delete(synchronize_session=False)

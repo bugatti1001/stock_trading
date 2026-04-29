@@ -659,7 +659,8 @@ async function executeTaTrade(selectedSymbols) {
         if (_taProgressShown) hideTaProgress();
         if (data.success) {
             const trades = data.trades || {};
-            const count = Object.keys(trades).length;
+            const count = Object.values(trades).filter(t => ['buy', 'sell'].includes(t.action)).length;
+            const analyzedCount = Object.keys(trades).length;
             window._taTrades = trades;
             localStorage.setItem('dashboard_ta_trades', JSON.stringify({
                 date: getTodayStr(), trades: trades
@@ -671,7 +672,7 @@ async function executeTaTrade(selectedSymbols) {
             } else {
                 alert(count > 0
                     ? `TA 交易完成：共 ${count} 笔操作`
-                    : 'TA 决定今日不交易（无符合条件的机会）');
+                    : `TA 分析完成：${analyzedCount} 只股票暂无买卖操作`);
             }
         } else {
             alert(data.error || 'TA 交易失败');

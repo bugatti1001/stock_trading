@@ -149,6 +149,12 @@ def create_user_session(username: str):
     return factory()
 
 
+def get_current_db_path() -> str:
+    """Return the SQLite path for the user bound to the current thread."""
+    username = getattr(_current_user, 'username', _DEFAULT_USER)
+    return _db_path_for_user(username)
+
+
 def get_db():
     """Dependency for getting database session (uses current user's DB)."""
     username = getattr(_current_user, 'username', _DEFAULT_USER)

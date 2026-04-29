@@ -12,7 +12,7 @@ from tradingagents.llm_clients import create_llm_client
 
 from tradingagents.agents import *
 from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.agents.utils.memory import FinancialSituationMemory
+from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.agents.utils.agent_states import (
     AgentState,
     InvestDebateState,
@@ -107,12 +107,9 @@ class TradingAgentsGraph:
         else:
             self.analyst_llm = self.quick_thinking_llm
         
-        # Initialize memories
-        self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
-        self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
-        self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
-        self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", self.config)
-        self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", self.config)
+        # Initialize decision log memory. The bundled agents no longer take
+        # per-role vector memories; past context is supplied from this log.
+        self.memory_log = TradingMemoryLog(self.config)
 
         # Create tool nodes
         self.tool_nodes = self._create_tool_nodes()
@@ -127,11 +124,11 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.analyst_llm,
-            self.bull_memory,
-            self.bear_memory,
-            self.trader_memory,
-            self.invest_judge_memory,
-            self.risk_manager_memory,
+            None,
+            None,
+            None,
+            None,
+            None,
             self.conditional_logic,
         )
 
@@ -210,8 +207,9 @@ class TradingAgentsGraph:
         self.ticker = company_name
 
         # Initialize state
+        past_context = self.memory_log.get_past_context(company_name)
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date
+            company_name, trade_date, past_context=past_context
         )
         args = self.propagator.get_graph_args()
 
@@ -235,6 +233,9 @@ class TradingAgentsGraph:
 
         # Log state
         self._log_state(trade_date, final_state)
+        self.memory_log.store_decision(
+            company_name, str(trade_date), final_state["final_trade_decision"]
+        )
 
         # Return decision and processed signal
         return final_state, self.process_signal(final_state["final_trade_decision"])
@@ -272,14 +273,15 @@ class TradingAgentsGraph:
         }
 
         # Save to file
-        directory = Path(f"eval_results/{self.ticker}/TradingAgentsStrategy_logs/")
+        directory = (
+            Path(self.config.get("results_dir", "eval_results"))
+            / self.ticker
+            / "TradingAgentsStrategy_logs"
+        )
         directory.mkdir(parents=True, exist_ok=True)
 
-        with open(
-            f"eval_results/{self.ticker}/TradingAgentsStrategy_logs/full_states_log_{trade_date}.json",
-            "w",
-            encoding="utf-8",
-        ) as f:
+        output_path = directory / f"full_states_log_{trade_date}.json"
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(self.log_states_dict, f, indent=4)
 
     def reflect_and_remember(self, returns_losses):
