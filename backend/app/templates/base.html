@@ -80,8 +80,18 @@
                                 </a>
                             </li>
                             <li>
+                                <a class="dropdown-item" href="#" data-provider="openai">
+                                    <i class="bi bi-check2 me-1 provider-check" style="visibility:hidden"></i>OpenAI
+                                </a>
+                            </li>
+                            <li>
                                 <a class="dropdown-item" href="#" data-provider="minimax">
                                     <i class="bi bi-check2 me-1 provider-check" style="visibility:hidden"></i>MiniMax
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item" href="#" data-provider="nvidia">
+                                    <i class="bi bi-check2 me-1 provider-check" style="visibility:hidden"></i>NVIDIA GPT-5.4
                                 </a>
                             </li>
                         </ul>
@@ -160,7 +170,7 @@
         if (!label || !menu) return;
 
         function updateUI(provider, available) {
-            const names = { claude: 'Claude', minimax: 'MiniMax' };
+            const names = { claude: 'Claude', openai: 'OpenAI', minimax: 'MiniMax', nvidia: 'NVIDIA' };
             label.textContent = names[provider] || 'AI';
             menu.querySelectorAll('[data-provider]').forEach(function(el) {
                 const p = el.getAttribute('data-provider');

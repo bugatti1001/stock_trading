@@ -6,6 +6,7 @@ import os
 
 # AI Model Configuration
 AI_MODEL = os.getenv('AI_MODEL', 'claude-sonnet-4-5-20250929')
+OPENAI_DEFAULT_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o')
 AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', '4096'))
 AI_TRADE_MAX_TOKENS = int(os.getenv('AI_TRADE_MAX_TOKENS', '1024'))
 
@@ -53,7 +54,14 @@ def get_anthropic_key() -> str:
         return ''
 
 def get_openai_key() -> str:
-    return os.getenv('OPENAI_API_KEY', '')
+    """从当前用户的数据库读取 OpenAI API Key，未保存时回退到环境变量"""
+    try:
+        from app.config.database import db_session
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='openai_api_key').first()
+        return row.value if row else os.getenv('OPENAI_API_KEY', '')
+    except Exception:
+        return os.getenv('OPENAI_API_KEY', '')
 
 def get_minimax_key() -> str:
     """从当前用户的数据库读取 MiniMax API Key"""
@@ -65,13 +73,33 @@ def get_minimax_key() -> str:
     except Exception:
         return ''
 
+def get_nvidia_key() -> str:
+    """从当前用户的数据库读取 NVIDIA API Key，未保存时回退到环境变量"""
+    try:
+        from app.config.database import db_session
+        from app.models.user_setting import UserSetting
+        row = db_session.query(UserSetting).filter_by(key='nvidia_api_key').first()
+        return row.value if row else os.getenv('NVIDIA_API_KEY', '')
+    except Exception:
+        return os.getenv('NVIDIA_API_KEY', '')
+
 def get_ai_provider() -> str:
-    """获取当前用户选择的 AI 提供商: 'claude' 或 'minimax'"""
+    """获取当前用户选择的 AI 提供商: 'claude'、'openai'、'minimax' 或 'nvidia'"""
     try:
         from app.config.database import db_session
         from app.models.user_setting import UserSetting
         row = db_session.query(UserSetting).filter_by(key='ai_provider').first()
-        return row.value if row and row.value in ('claude', 'minimax') else 'claude'
+        if row and row.value in ('claude', 'openai', 'minimax', 'nvidia'):
+            return row.value
+        if get_anthropic_key():
+            return 'claude'
+        if get_openai_key():
+            return 'openai'
+        if get_minimax_key():
+            return 'minimax'
+        if get_nvidia_key():
+            return 'nvidia'
+        return 'claude'
     except Exception:
         return 'claude'
 
@@ -79,14 +107,19 @@ def get_ai_provider() -> str:
 MINIMAX_BASE_URL = 'https://api.minimaxi.chat/v1'
 MINIMAX_DEFAULT_MODEL = 'MiniMax-M2.5'
 
+# NVIDIA OpenAI-compatible endpoint (fixed for this deployment)
+NVIDIA_BASE_URL = 'https://inference-api.nvidia.com'
+NVIDIA_DEFAULT_MODEL = 'azure/openai/gpt-5.4'
+
 # Supported AI models
-OPENAI_MODELS = {'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'}
+OPENAI_MODELS = {OPENAI_DEFAULT_MODEL, 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'}
 ANTHROPIC_MODELS = {
     'claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-3-5',
     'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022',
     'claude-3-opus-20240229'
 }
 MINIMAX_MODELS = {'MiniMax-M2.5', 'MiniMax-Text-01'}
+NVIDIA_MODELS = {NVIDIA_DEFAULT_MODEL}
 
 # Valid principle categories
 VALID_CATEGORIES = {'risk', 'valuation', 'selection', 'behavior'}

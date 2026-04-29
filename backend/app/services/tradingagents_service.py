@@ -498,8 +498,9 @@ def _get_ta_config() -> dict:
     """
     from tradingagents.default_config import DEFAULT_CONFIG
     from app.config.settings import (
-        get_ai_provider, get_anthropic_key, get_minimax_key,
-        AI_MODEL, MINIMAX_DEFAULT_MODEL, MINIMAX_BASE_URL,
+        get_ai_provider, get_anthropic_key, get_openai_key, get_minimax_key,
+        get_nvidia_key, AI_MODEL, OPENAI_DEFAULT_MODEL, MINIMAX_DEFAULT_MODEL,
+        MINIMAX_BASE_URL, NVIDIA_DEFAULT_MODEL, NVIDIA_BASE_URL,
     )
 
     config = deepcopy(DEFAULT_CONFIG)
@@ -526,12 +527,26 @@ def _get_ta_config() -> dict:
         config['quick_think_llm'] = AI_MODEL
         config['backend_url'] = None
         config['api_key'] = api_key
+    elif provider == 'openai':
+        api_key = get_openai_key()
+        config['llm_provider'] = 'openai'
+        config['deep_think_llm'] = OPENAI_DEFAULT_MODEL
+        config['quick_think_llm'] = OPENAI_DEFAULT_MODEL
+        config['backend_url'] = None
+        config['api_key'] = api_key
     elif provider == 'minimax':
         api_key = get_minimax_key()
         config['llm_provider'] = 'openai'
         config['deep_think_llm'] = MINIMAX_DEFAULT_MODEL
         config['quick_think_llm'] = MINIMAX_DEFAULT_MODEL
         config['backend_url'] = MINIMAX_BASE_URL
+        config['api_key'] = api_key
+    elif provider == 'nvidia':
+        api_key = get_nvidia_key()
+        config['llm_provider'] = 'openai'
+        config['deep_think_llm'] = NVIDIA_DEFAULT_MODEL
+        config['quick_think_llm'] = NVIDIA_DEFAULT_MODEL
+        config['backend_url'] = NVIDIA_BASE_URL
         config['api_key'] = api_key
     else:
         # fallback to claude

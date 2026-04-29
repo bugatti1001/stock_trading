@@ -472,7 +472,7 @@ def _call_openai(text: str, model: str) -> Dict[str, Any]:
     from openai import OpenAI
     api_key = get_openai_key()
     if not api_key:
-        raise ValueError("未配置 OPENAI_API_KEY，请在 .env 文件中添加")
+        raise ValueError("未配置 OpenAI API Key，请在登录页填写或在 .env 文件中添加 OPENAI_API_KEY")
 
     client = OpenAI(api_key=api_key)
     prompt = EXTRACTION_PROMPT + text

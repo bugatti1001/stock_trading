@@ -78,17 +78,27 @@ def login():
 
             # 将 API Key 持久化到用户的 SQLite 数据库
             api_key = request.form.get('api_key', '').strip()
+            openai_key = request.form.get('openai_api_key', '').strip()
             minimax_key = request.form.get('minimax_api_key', '').strip()
+            nvidia_key = request.form.get('nvidia_api_key', '').strip()
             finnhub_key = request.form.get('finnhub_api_key', '').strip()
             if api_key:
                 _save_setting(username, 'anthropic_api_key', api_key)
+            if openai_key:
+                _save_setting(username, 'openai_api_key', openai_key)
             if minimax_key:
                 _save_setting(username, 'minimax_api_key', minimax_key)
+            if nvidia_key:
+                _save_setting(username, 'nvidia_api_key', nvidia_key)
             if finnhub_key:
                 _save_setting(username, 'finnhub_api_key', finnhub_key)
             # 自动设置默认 AI 提供商
-            if minimax_key and not api_key:
+            if openai_key and not api_key:
+                _save_setting(username, 'ai_provider', 'openai')
+            elif minimax_key and not api_key:
                 _save_setting(username, 'ai_provider', 'minimax')
+            elif nvidia_key and not api_key:
+                _save_setting(username, 'ai_provider', 'nvidia')
 
             logger.info(f"用户 {username} 登录成功")
             return redirect(next_url)

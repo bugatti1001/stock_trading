@@ -709,15 +709,24 @@ def update_valuation_params():
 def get_ai_provider():
     """获取当前 AI 提供商设置"""
     try:
-        from app.config.settings import get_ai_provider, get_anthropic_key, get_minimax_key
+        from app.config.settings import (
+            get_ai_provider, get_anthropic_key, get_openai_key,
+            get_minimax_key, get_nvidia_key,
+        )
         provider = get_ai_provider()
         has_claude = bool(get_anthropic_key())
+        has_openai = bool(get_openai_key())
         has_minimax = bool(get_minimax_key())
+        has_nvidia = bool(get_nvidia_key())
         available = []
         if has_claude:
             available.append('claude')
+        if has_openai:
+            available.append('openai')
         if has_minimax:
             available.append('minimax')
+        if has_nvidia:
+            available.append('nvidia')
         return success_response(provider=provider, available=available)
     except Exception as e:
         logger.error(f"get_ai_provider 错误: {e}")
@@ -730,8 +739,8 @@ def set_ai_provider():
     try:
         data = request.get_json()
         provider = data.get('provider', '').strip().lower()
-        if provider not in ('claude', 'minimax'):
-            return error_response('provider 必须是 claude 或 minimax')
+        if provider not in ('claude', 'openai', 'minimax', 'nvidia'):
+            return error_response('provider 必须是 claude、openai、minimax 或 nvidia')
 
         from app.config.database import db_session
         from app.models.user_setting import UserSetting

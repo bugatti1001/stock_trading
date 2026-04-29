@@ -145,7 +145,7 @@ def chat_stream(conversation_id: int, user_message: str) -> Iterator[str]:
             include_principles=bool(conv.include_principles),
         )
 
-        # 流式调用 AI（自动选择 Claude 或 MiniMax）
+        # 流式调用 AI（自动选择 Claude、OpenAI 或 MiniMax）
         full_response: List[str] = []
         for text in stream_message(
             system=system_prompt,

@@ -7,6 +7,7 @@ __pycache__/
 venv/
 env/
 ENV/
+backend/.codex_deps/
 build/
 develop-eggs/
 dist/

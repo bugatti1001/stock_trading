@@ -175,10 +175,14 @@ def analyze_news_stream(news_by_symbol: Dict[str, List[Dict]]) -> Iterator[str]:
         - data: [DONE]
     """
     try:
-        from app.config.settings import get_ai_provider, get_minimax_key
+        from app.config.settings import get_ai_provider, get_openai_key, get_minimax_key, get_nvidia_key
         provider: str = get_ai_provider()
-        if provider == 'minimax':
+        if provider == 'openai':
+            api_key: str = get_openai_key()
+        elif provider == 'minimax':
             api_key: str = get_minimax_key()
+        elif provider == 'nvidia':
+            api_key: str = get_nvidia_key()
         else:
             api_key: str = get_anthropic_key()
         if not api_key:

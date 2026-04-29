@@ -76,12 +76,29 @@
                     </div>
                 </div>
                 <div class="mb-3">
+                    <label for="openai_api_key" class="form-label">OpenAI API Key</label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-key"></i></span>
+                        <input type="password" class="form-control" id="openai_api_key" name="openai_api_key"
+                               placeholder="sk-...">
+                    </div>
+                </div>
+                <div class="mb-3">
                     <label for="minimax_api_key" class="form-label">MiniMax API Key</label>
                     <div class="input-group">
                         <span class="input-group-text"><i class="bi bi-key"></i></span>
                         <input type="password" class="form-control" id="minimax_api_key" name="minimax_api_key"
                                placeholder="eyJ...">
                     </div>
+                </div>
+                <div class="mb-3">
+                    <label for="nvidia_api_key" class="form-label">NVIDIA API Key <span class="text-muted">(只需填写 Key)</span></label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-key"></i></span>
+                        <input type="password" class="form-control" id="nvidia_api_key" name="nvidia_api_key"
+                               placeholder="sk-...（base_url 和 model_name 已固定）">
+                    </div>
+                    <div class="form-text">base_url 已固定为 https://inference-api.nvidia.com，model_name 已固定为 azure/openai/gpt-5.4。</div>
                 </div>
                 <div class="mb-3">
                     <label for="finnhub_api_key" class="form-label">Finnhub API Key <span class="text-muted">(可选)</span></label>
@@ -91,7 +108,7 @@
                                placeholder="留空则使用服务器默认配置">
                     </div>
                 </div>
-                <p class="text-muted small mb-3">至少填写一个 AI API Key；如已保存过可留空。Finnhub Key 用于美股新闻，不填则用服务器默认值。</p>
+                <p class="text-muted small mb-3">至少填写一个 AI API Key（Claude / OpenAI / MiniMax / NVIDIA）；如已保存过可留空。Finnhub Key 用于美股新闻，不填则用服务器默认值。</p>
                 <button type="submit" class="btn btn-primary w-100">
                     <i class="bi bi-box-arrow-in-right"></i> 登录
                 </button>

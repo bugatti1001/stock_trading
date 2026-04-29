@@ -1564,7 +1564,7 @@ async function saveExtractedPrinciples() {
 /* ============ 初始化 ============ */
 document.addEventListener('DOMContentLoaded', async () => {
     // 动态显示当前 AI 模型
-    const _providerNames = { claude: 'Claude', minimax: 'MiniMax M2.5' };
+    const _providerNames = { claude: 'Claude', openai: 'OpenAI GPT', minimax: 'MiniMax M2.5', nvidia: 'NVIDIA GPT-5.4' };
     function _updateModelLabel(provider) {
         const el = document.getElementById('chatModelInfo');
         if (el) el.textContent = '基于基本面分析 · ' + (_providerNames[provider] || provider);
