@@ -633,8 +633,12 @@ async function executeTaTrade(selectedSymbols) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 执行中...';
 
-    // Show progress modal and start polling
-    showTaProgress();
+    // Show progress modal after 2s delay (skip if response comes back instantly)
+    let _taProgressShown = false;
+    const _taProgressTimeout = setTimeout(() => {
+        _taProgressShown = true;
+        showTaProgress();
+    }, 2000);
     _taProgressInterval = setInterval(async () => {
         try {
             const r = await fetch('/api/agent/ta_progress');
@@ -651,7 +655,8 @@ async function executeTaTrade(selectedSymbols) {
         };
         const res = await fetch('/api/agent/ta_trades', fetchOpts);
         const data = await res.json();
-        hideTaProgress();
+        clearTimeout(_taProgressTimeout);
+        if (_taProgressShown) hideTaProgress();
         if (data.success) {
             const trades = data.trades || {};
             const count = Object.keys(trades).length;
@@ -672,7 +677,8 @@ async function executeTaTrade(selectedSymbols) {
             alert(data.error || 'TA 交易失败');
         }
     } catch (e) {
-        hideTaProgress();
+        clearTimeout(_taProgressTimeout);
+        if (_taProgressShown) hideTaProgress();
         alert('网络错误: ' + e.message);
     } finally {
         btn.disabled = false;
@@ -780,14 +786,15 @@ function renderScoreTable(scores) {
         // TA 交易建议列
         const taTrade = (window._taTrades || {})[s.symbol];
         let taTradeCell = '<span class="text-muted">-</span>';
-        if (taTrade) {
+        if (taTrade && taTrade.shares > 0) {
             const isBuy = taTrade.action === 'buy';
             const color = isBuy ? 'success' : 'danger';
             const icon = isBuy ? 'cart-plus' : 'cart-dash';
             const label = isBuy ? '买入' : '卖出';
+            const sharesDisplay = Number.isInteger(taTrade.shares) ? taTrade.shares : taTrade.shares.toFixed(2);
             const reasonShort = (taTrade.reason || '').substring(0, 150).replace(/"/g, '&quot;');
             taTradeCell = `<span class="badge bg-${color}" style="cursor:help" title="${reasonShort}">
-                <i class="bi bi-${icon}"></i> ${label} ${taTrade.shares}股</span>`;
+                <i class="bi bi-${icon}"></i> ${label} ${sharesDisplay}股</span>`;
         }
 
         // 标签徽章
