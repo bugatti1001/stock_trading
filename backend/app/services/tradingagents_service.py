@@ -21,14 +21,10 @@ from app.config.database import db_session
 
 logger = logging.getLogger(__name__)
 
-# Auto-detect TradingAgents path: env var > /opt (server) > local dev
-TRADINGAGENTS_PATH = os.getenv('TRADINGAGENTS_PATH',
-    '/opt/TradingAgents' if os.path.isdir('/opt/TradingAgents')
-    else '/Users/hongyuanyuan/Documents/claude_projects/TradingAgents'
-)
-
-# Ensure TradingAgents is importable
-if os.path.isdir(TRADINGAGENTS_PATH) and TRADINGAGENTS_PATH not in sys.path:
+# TradingAgents is now bundled at backend/tradingagents/
+# Ensure it's importable (backend/ is the working dir, so 'import tradingagents' works directly)
+TRADINGAGENTS_PATH = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # backend/
+if TRADINGAGENTS_PATH not in sys.path:
     sys.path.insert(0, TRADINGAGENTS_PATH)
 TRADER_NAME = 'tradingagents'
 MAX_POSITIONS = 5
