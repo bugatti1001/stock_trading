@@ -9,6 +9,7 @@ TradingAgents 框架集成服务。
 """
 import logging
 import os
+import re
 import sys
 import time
 import threading
@@ -28,6 +29,18 @@ if TRADINGAGENTS_PATH not in sys.path:
     sys.path.insert(0, TRADINGAGENTS_PATH)
 TRADER_NAME = 'tradingagents'
 MAX_POSITIONS = 5
+TA_CASH_RESERVE_PCT = 0.05
+TA_MAX_POSITION_WEIGHT = 0.25
+TA_MIN_NEW_POSITION_WEIGHT = 0.08
+TA_MIN_REBALANCE_WEIGHT = 0.02
+
+TA_RATING_STRENGTH = {
+    'BUY': 3,
+    'OVERWEIGHT': 2,
+    'HOLD': 0,
+    'UNDERWEIGHT': -2,
+    'SELL': -3,
+}
 
 # ── Concurrency & Rate-Limit Settings ─────────────────────────────────────
 # How many stocks to analyze in parallel.  Keep low to avoid API rate limits.
@@ -591,13 +604,60 @@ import json as _json
 import tempfile
 _PROGRESS_FILE = os.path.join(tempfile.gettempdir(), 'ta_progress.json')
 
+TA_PROGRESS_STAGES = [
+    ("Market Analyst", "市场分析"),
+    ("Social Analyst", "情绪分析"),
+    ("News Analyst", "新闻分析"),
+    ("Fundamentals Analyst", "基本面分析"),
+    ("Report Compressor", "报告压缩"),
+    ("Bull Researcher", "多头研究"),
+    ("Bear Researcher", "空头研究"),
+    ("Research Manager", "研究经理"),
+    ("Trader", "交易员"),
+    ("Aggressive Analyst", "进取风险"),
+    ("Conservative Analyst", "保守风险"),
+    ("Neutral Analyst", "中性风险"),
+    ("Risk Judge", "组合经理"),
+]
+_STAGE_INDEX = {name: idx + 1 for idx, (name, _label) in enumerate(TA_PROGRESS_STAGES)}
+_STAGE_LABEL = {name: label for name, label in TA_PROGRESS_STAGES}
+
+
+def _empty_progress() -> dict:
+    return {
+        'running': False,
+        'phase': 'idle',
+        'completed': 0,
+        'total': 0,
+        'current_symbol': '',
+        'results': {},
+        'active': {},
+        'events': [],
+        'stage_total': len(TA_PROGRESS_STAGES),
+        'stage_labels': [{'node': node, 'label': label} for node, label in TA_PROGRESS_STAGES],
+        'overall_pct': 0,
+    }
+
+
+def _read_progress_unlocked() -> dict:
+    try:
+        with open(_PROGRESS_FILE, 'r') as f:
+            data = _json.load(f)
+            return data if isinstance(data, dict) else _empty_progress()
+    except (FileNotFoundError, _json.JSONDecodeError, Exception):
+        return _empty_progress()
+
+
+def _write_progress_unlocked(data: dict):
+    with open(_PROGRESS_FILE, 'w') as f:
+        _json.dump(data, f)
+
 
 def _save_progress(data: dict):
     """Save progress to a temp file (readable by any Gunicorn worker)."""
     with _progress_lock:
         try:
-            with open(_PROGRESS_FILE, 'w') as f:
-                _json.dump(data, f)
+            _write_progress_unlocked(data)
         except Exception:
             pass
 
@@ -608,10 +668,202 @@ def get_ta_progress() -> dict:
         with open(_PROGRESS_FILE, 'r') as f:
             return _json.load(f)
     except (FileNotFoundError, _json.JSONDecodeError, Exception):
-        return {'running': False, 'completed': 0, 'total': 0, 'current_symbol': '', 'results': {}}
+        return _empty_progress()
 
 
-def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
+def _append_progress_event(progress: dict, symbol: str, text: str, level: str = 'info'):
+    events = progress.setdefault('events', [])
+    events.append({
+        'ts': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+        'symbol': symbol,
+        'text': text,
+        'level': level,
+    })
+    progress['events'] = events[-60:]
+
+
+def _recompute_progress(progress: dict):
+    active = progress.get('active') or {}
+    total = progress.get('total') or len(active)
+    progress['completed'] = sum(
+        1 for info in active.values()
+        if info.get('status') in {'completed', 'error'}
+    )
+
+    if total <= 0:
+        progress['overall_pct'] = 0
+        progress['current_symbol'] = ''
+        return
+
+    stage_total = max(1, progress.get('stage_total') or len(TA_PROGRESS_STAGES))
+    partial_units = 0.0
+    for info in active.values():
+        status = info.get('status')
+        if status in {'completed', 'error'}:
+            partial_units += 1.0
+        elif status == 'running':
+            stage_index = max(0, min(stage_total, int(info.get('stage_index') or 0)))
+            stage_status = info.get('stage_status')
+            if stage_status == 'completed':
+                partial_units += stage_index / stage_total
+            else:
+                partial_units += max(0, stage_index - 1) / stage_total
+
+    progress['overall_pct'] = min(100, round((partial_units / total) * 100))
+    running_symbols = [
+        sym for sym, info in active.items()
+        if info.get('status') == 'running'
+    ]
+    progress['current_symbol'] = ', '.join(running_symbols[:3])
+    progress['updated_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+
+
+def _update_progress(mutator):
+    with _progress_lock:
+        progress = _read_progress_unlocked()
+        mutator(progress)
+        _recompute_progress(progress)
+        try:
+            _write_progress_unlocked(progress)
+        except Exception:
+            pass
+        return progress
+
+
+def _init_ta_progress(symbols: List[str]):
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    progress = {
+        'running': True,
+        'phase': 'preparing',
+        'completed': 0,
+        'total': len(symbols),
+        'current_symbol': '',
+        'results': {},
+        'active': {
+            sym: {
+                'symbol': sym,
+                'status': 'queued',
+                'stage': '排队',
+                'stage_node': '',
+                'stage_index': 0,
+                'stage_total': len(TA_PROGRESS_STAGES),
+                'stage_pct': 0,
+                'stage_status': 'queued',
+                'started_at': None,
+                'updated_at': now,
+                'elapsed_sec': None,
+            }
+            for sym in symbols
+        },
+        'events': [],
+        'stage_total': len(TA_PROGRESS_STAGES),
+        'stage_labels': [{'node': node, 'label': label} for node, label in TA_PROGRESS_STAGES],
+        'overall_pct': 0,
+        'started_at': now,
+        'updated_at': now,
+    }
+    _append_progress_event(progress, '', f'准备分析 {len(symbols)} 只股票')
+    _save_progress(progress)
+
+
+def _set_ta_progress_phase(phase: str, text: str):
+    def mutate(progress):
+        progress['phase'] = phase
+        _append_progress_event(progress, '', text)
+    _update_progress(mutate)
+
+
+def _mark_ta_stock_started(symbol: str):
+    def mutate(progress):
+        now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        progress['phase'] = 'analyzing'
+        info = progress.setdefault('active', {}).setdefault(symbol, {})
+        info.update({
+            'symbol': symbol,
+            'status': 'running',
+            'stage': '等待模型',
+            'stage_node': '',
+            'stage_status': 'started',
+            'updated_at': now,
+        })
+        if not info.get('started_at'):
+            info['started_at'] = now
+        _append_progress_event(progress, symbol, '开始分析')
+    _update_progress(mutate)
+
+
+def _handle_ta_node_progress(event: dict):
+    symbol = str(event.get('symbol') or '').upper()
+    node = str(event.get('node') or '')
+    status = event.get('status') or 'started'
+    if not symbol or not node:
+        return
+
+    def mutate(progress):
+        now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        progress['phase'] = 'analyzing'
+        info = progress.setdefault('active', {}).setdefault(symbol, {'symbol': symbol})
+        old_index = int(info.get('stage_index') or 0)
+        stage_index = _STAGE_INDEX.get(node, old_index)
+        stage_index = max(old_index, stage_index)
+        stage_total = len(TA_PROGRESS_STAGES)
+        label = _STAGE_LABEL.get(node, node)
+        info.update({
+            'symbol': symbol,
+            'status': 'running',
+            'stage': label,
+            'stage_node': node,
+            'stage_index': stage_index,
+            'stage_total': stage_total,
+            'stage_pct': min(99, round(stage_index / stage_total * 100)),
+            'stage_status': status,
+            'updated_at': now,
+        })
+        if not info.get('started_at'):
+            info['started_at'] = now
+        if status == 'completed':
+            info['elapsed_sec'] = round(float(event.get('elapsed') or 0), 1)
+            _append_progress_event(progress, symbol, f'{label} 完成 ({info["elapsed_sec"]}s)')
+        else:
+            _append_progress_event(progress, symbol, f'{label} 中')
+    _update_progress(mutate)
+
+
+def _mark_ta_stock_completed(symbol: str, action: str, error: bool = False):
+    def mutate(progress):
+        now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        info = progress.setdefault('active', {}).setdefault(symbol, {'symbol': symbol})
+        info.update({
+            'status': 'error' if error else 'completed',
+            'stage': '失败' if error else '完成',
+            'stage_node': '',
+            'stage_index': len(TA_PROGRESS_STAGES),
+            'stage_total': len(TA_PROGRESS_STAGES),
+            'stage_pct': 100,
+            'stage_status': 'completed',
+            'updated_at': now,
+            'action': action,
+        })
+        progress.setdefault('results', {})[symbol] = action
+        _append_progress_event(progress, symbol, ('失败' if error else f'完成: {action.upper()}'),
+                               level='error' if error else 'info')
+    _update_progress(mutate)
+
+
+def _finish_ta_progress():
+    def mutate(progress):
+        progress['running'] = False
+        progress['phase'] = 'done'
+        progress['current_symbol'] = ''
+        _append_progress_event(progress, '', '全部分析完成')
+    _update_progress(mutate)
+
+
+def run_ta_for_stock(
+    symbol: str,
+    data_cache: Optional[dict] = None,
+    progress_callback=None,
+) -> dict:
     """
     Run TradingAgents for a single stock.
     Returns {'action': 'buy'/'sell'/'hold', 'reason': '...'}
@@ -621,6 +873,7 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
         data_cache: Optional pre-built cache dict for this symbol.
                     If provided, will be injected via inject_data_cache()
                     so TA reads DB data instead of calling yfinance.
+        progress_callback: Optional callback receiving per-node graph progress events.
     """
     from tradingagents.graph.trading_graph import TradingAgentsGraph
     from tradingagents.dataflows.interface import inject_data_cache, clear_data_cache
@@ -629,7 +882,7 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
     api_key = config.pop('api_key', None)
 
     if not api_key:
-        return {'action': 'hold', 'reason': '未配置 API Key，请在登录时输入'}
+        return {'action': 'hold', 'rating': 'Hold', 'reason': '未配置 API Key，请在登录时输入'}
 
     today_str = date_type.today().strftime('%Y-%m-%d')
 
@@ -664,7 +917,10 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
                 os.environ[env_key_name] = api_key
 
             try:
-                ta_graph = TradingAgentsGraph(config=config)
+                ta_graph = TradingAgentsGraph(
+                    config=config,
+                    progress_callback=progress_callback,
+                )
                 final_state, decision = ta_graph.propagate(symbol, today_str)
             finally:
                 # Restore env
@@ -677,10 +933,11 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
                 clear_data_cache()
 
             # Parse decision
-            rating = decision.strip().upper() if decision else 'HOLD'
-            if rating in ('BUY', 'OVERWEIGHT'):
+            rating = decision.strip() if decision else 'Hold'
+            rating_upper = rating.upper()
+            if rating_upper in ('BUY', 'OVERWEIGHT'):
                 action = 'BUY'
-            elif rating in ('SELL', 'UNDERWEIGHT'):
+            elif rating_upper in ('SELL', 'UNDERWEIGHT'):
                 action = 'SELL'
             else:
                 action = 'HOLD'
@@ -688,8 +945,8 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
             reason = (final_state or {}).get('final_trade_decision', '') or ''
             # reason 字段为 Text 类型，不限长度，保留完整的多Agent分析报告
 
-            logger.info(f"[TA] {symbol} 决策: {action}")
-            return {'action': action.lower(), 'reason': reason}
+            logger.info(f"[TA] {symbol} 决策: {rating} -> {action}")
+            return {'action': action.lower(), 'rating': rating, 'reason': reason}
 
         except Exception as e:
             err_str = str(e).lower()
@@ -708,9 +965,13 @@ def run_ta_for_stock(symbol: str, data_cache: Optional[dict] = None) -> dict:
                 continue
             else:
                 logger.error(f"[TA] {symbol} 分析失败 (尝试 {attempt}): {e}", exc_info=True)
-                return {'action': 'hold', 'reason': f'TradingAgents 分析失败: {str(e)[:200]}'}
+                return {
+                    'action': 'hold',
+                    'rating': 'Hold',
+                    'reason': f'TradingAgents 分析失败: {str(e)[:200]}',
+                }
 
-    return {'action': 'hold', 'reason': 'TradingAgents 分析失败: 超过最大重试次数'}
+    return {'action': 'hold', 'rating': 'Hold', 'reason': 'TradingAgents 分析失败: 超过最大重试次数'}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -845,6 +1106,99 @@ def compute_ta_cash() -> float:
     return round(cash, 2)
 
 
+def _normalize_ta_rating(decision: dict) -> str:
+    rating = str(decision.get('rating') or '').strip().upper()
+    if rating in TA_RATING_STRENGTH:
+        return rating
+    action = str(decision.get('action') or '').strip().upper()
+    if action == 'BUY':
+        return 'BUY'
+    if action == 'SELL':
+        return 'SELL'
+    return 'HOLD'
+
+
+def _extract_ta_price_target(reason: str) -> Optional[float]:
+    if not reason:
+        return None
+    patterns = [
+        r"\*\*Price Target\*\*\s*:\s*(?:[A-Z]{2,4}\s*)?(?:[$¥]|HK\$)?\s*([0-9][0-9,]*(?:\.\d+)?)",
+        r"Price Target\s*:\s*(?:[A-Z]{2,4}\s*)?(?:[$¥]|HK\$)?\s*([0-9][0-9,]*(?:\.\d+)?)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, reason, flags=re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            return float(m.group(1).replace(',', ''))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _ta_candidate_upside(decision: dict, price: float) -> Optional[float]:
+    if not price or price <= 0:
+        return None
+    target = _extract_ta_price_target(decision.get('reason', ''))
+    if target is None or target <= 0:
+        return None
+    return (target - price) / price
+
+
+def _score_ta_buy_candidate(decision: dict, price: float) -> float:
+    """Conviction score used only for ranking candidates competing for slots."""
+    rating = _normalize_ta_rating(decision)
+    base = 100 if rating == 'BUY' else 70 if rating == 'OVERWEIGHT' else 0
+    upside = _ta_candidate_upside(decision, price)
+    if upside is not None:
+        base += max(-25, min(35, upside * 100))
+    return round(base, 2)
+
+
+def _target_weight_for_ta_candidate(decision: dict, price: float) -> float:
+    """Target portfolio weight for a new or topped-up TA candidate."""
+    rating = _normalize_ta_rating(decision)
+    if rating == 'BUY':
+        target = 0.20
+    elif rating == 'OVERWEIGHT':
+        target = 0.10
+    else:
+        return 0.0
+
+    upside = _ta_candidate_upside(decision, price)
+    if upside is not None:
+        # Price targets adjust sizing within the approved weight bands.
+        target += max(-0.02, min(0.05, upside * 0.10))
+
+    return round(max(TA_MIN_NEW_POSITION_WEIGHT, min(TA_MAX_POSITION_WEIGHT, target)), 4)
+
+
+def _price_for_portfolio_value(symbol: str, holding: dict, price_map: dict) -> float:
+    price = price_map.get(symbol)
+    if price and price > 0:
+        return price
+    avg_cost = holding.get('avg_cost', 0)
+    return avg_cost if avg_cost and avg_cost > 0 else 0.0
+
+
+def _portfolio_value(holdings: dict, cash: float, price_map: dict) -> float:
+    value = cash
+    for symbol, holding in holdings.items():
+        shares = holding.get('shares', 0) or 0
+        price = _price_for_portfolio_value(symbol, holding, price_map)
+        if shares > 0 and price > 0:
+            value += shares * price
+    return round(value, 2)
+
+
+def _prepend_execution_note(decision: dict, note: str):
+    reason = decision.get('reason') or ''
+    if reason.startswith('**Execution Note**:'):
+        decision['reason'] = reason
+    else:
+        decision['reason'] = f"**Execution Note**: {note}\n\n{reason}".strip()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Main entry: generate trades (with parallel execution)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -922,6 +1276,13 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
     ta_holdings = compute_ta_holdings()
     ta_cash = compute_ta_cash()
 
+    # Add prices for existing TA holdings that may not be part of the selected run.
+    missing_price_symbols = [sym for sym in ta_holdings if sym not in price_map]
+    if missing_price_symbols:
+        for s in db_session.query(Stock).filter(Stock.symbol.in_(missing_price_symbols)).all():
+            if s.current_price and s.current_price > 0:
+                price_map[s.symbol] = s.current_price
+
     # F5: Smart filtering — only analyze stocks that matter
     # Skip filtering when user explicitly selects stocks
     if selected_symbols:
@@ -962,15 +1323,11 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
 
     logger.info(f"[TA] 可用现金: ${ta_cash:,.2f}, 当前持仓: {list(ta_holdings.keys())}")
 
-    # Reset progress before prefetching so the frontend never shows a stale
-    # previous run while the new selected-symbol run is still preparing data.
-    _progress = {
-        'running': True, 'completed': 0, 'total': len(symbols),
-        'current_symbol': '', 'results': {},
-    }
-    _save_progress(_progress)
+    # Reset progress before prefetching so the frontend never shows stale data.
+    _init_ta_progress(symbols)
 
     # 4a. Pre-fetch global news ONCE and share across all stocks
+    _set_ta_progress_phase('preparing', '读取全局新闻缓存')
     global_news_cache = _build_global_news_cache()
 
     # 4b. Pre-build data caches for ALL symbols (fast, DB-only, no API calls)
@@ -988,15 +1345,19 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
 
     total_cached = sum(len(v) for v in symbol_caches.values())
     logger.info(f"[TA] 预缓存完成: {total_cached} 条数据条目 (含全局新闻共享, 省去对应数量的外部API调用)")
+    _set_ta_progress_phase('analyzing', f'预缓存完成，开始并行分析 {len(symbols)} 只股票')
 
     # 5. Parallel analysis with ThreadPoolExecutor + progress tracking
     decisions: Dict[str, dict] = {}
     completed = 0
 
     def _run_one(sym):
-        _progress['current_symbol'] = sym
-        _save_progress(_progress)
-        return sym, run_ta_for_stock(sym, data_cache=symbol_caches.get(sym))
+        _mark_ta_stock_started(sym)
+        return sym, run_ta_for_stock(
+            sym,
+            data_cache=symbol_caches.get(sym),
+            progress_callback=_handle_ta_node_progress,
+        )
 
     workers = min(MAX_WORKERS, len(symbols))
     logger.info(f"[TA] 启动并行分析: {workers} 个并发线程")
@@ -1011,9 +1372,7 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
                     sym_result, decision = future.result()
                     decisions[sym_result] = decision
                     completed += 1
-                    _progress['completed'] = completed
-                    _progress['results'][sym_result] = decision['action']
-                    _save_progress(_progress)
+                    _mark_ta_stock_completed(sym_result, decision['action'])
                     logger.info(
                         f"[TA] 完成 {completed}/{len(symbols)}: "
                         f"{sym_result} -> {decision['action']}"
@@ -1021,44 +1380,71 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
                 except Exception as e:
                     decisions[sym] = {'action': 'hold', 'reason': f'并行执行异常: {str(e)[:200]}'}
                     completed += 1
-                    _progress['completed'] = completed
-                    _progress['results'][sym] = 'error'
-                    _save_progress(_progress)
+                    _mark_ta_stock_completed(sym, 'error', error=True)
                     logger.error(f"[TA] {sym} 并行执行异常: {e}", exc_info=True)
     finally:
-        _progress['running'] = False
-        _progress['current_symbol'] = ''
-        _save_progress(_progress)
+        _finish_ta_progress()
 
     logger.info(f"[TA] 全部分析完成: {len(decisions)} 只股票")
 
-    # 6. Position sizing
-    current_position_count = len(ta_holdings)
-    remaining_slots = max(0, MAX_POSITIONS - current_position_count)
-
-    # Collect buy candidates and sell candidates
-    buy_candidates = []
-    sell_candidates = []
-    for symbol, dec in decisions.items():
-        if dec['action'] == 'buy' and symbol not in ta_holdings:
-            buy_candidates.append(symbol)
-        elif dec['action'] == 'sell' and symbol in ta_holdings:
-            sell_candidates.append(symbol)
-
-    # Allocate equal weight for buys
-    buy_slots = min(len(buy_candidates), remaining_slots)
-    cash_per_slot = (ta_cash / buy_slots) if buy_slots > 0 else 0
-
+    # 6. Portfolio execution
+    #
+    # The TA model produces ratings; execution maps those ratings into a
+    # target-weight portfolio. This makes buys deterministic, respects a cash
+    # reserve, avoids tiny rebalance trades, and prevents equal-dollar buys
+    # when conviction differs.
+    symbol_order = {sym: idx for idx, sym in enumerate(symbols)}
+    active_holdings = {
+        symbol: dict(holding)
+        for symbol, holding in ta_holdings.items()
+        if (holding.get('shares') or 0) > 0
+    }
     valid_trades = {}
     available_cash = ta_cash
+    portfolio_value = _portfolio_value(active_holdings, available_cash, price_map)
+    reserve_value = portfolio_value * TA_CASH_RESERVE_PCT if portfolio_value > 0 else 0
 
-    # Process sells first (frees up cash and slots)
-    for symbol in sell_candidates:
-        h = ta_holdings.get(symbol, {})
-        shares = h.get('shares', 0)
-        price = price_map.get(symbol, 0)
-        if shares <= 0 or price <= 0:
+    logger.info(
+        f"[TA] Portfolio execution: value=${portfolio_value:,.2f}, "
+        f"cash=${available_cash:,.2f}, reserve=${reserve_value:,.2f}, "
+        f"positions={len(active_holdings)}/{MAX_POSITIONS}"
+    )
+
+    # Process reductions first. Underweight trims; Sell exits.
+    for symbol, dec in decisions.items():
+        rating = _normalize_ta_rating(dec)
+        if dec.get('action') != 'sell':
             continue
+        if symbol not in active_holdings:
+            _prepend_execution_note(
+                dec,
+                f"TA rated this {rating.title()}, but there is no current TA position to reduce.",
+            )
+            continue
+
+        h = active_holdings.get(symbol, {})
+        held_shares = h.get('shares', 0)
+        price = _price_for_portfolio_value(symbol, h, price_map)
+        if held_shares <= 0 or price <= 0:
+            _prepend_execution_note(
+                dec,
+                "TA recommended reducing this holding, but execution skipped it because no usable price was available.",
+            )
+            continue
+
+        if rating == 'UNDERWEIGHT':
+            shares = round(held_shares * 0.5, 6)
+            if shares <= 0:
+                continue
+            execution_note = (
+                "TA rated the holding Underweight, so the portfolio layer trims "
+                "toward half-size instead of exiting completely."
+            )
+        else:
+            shares = held_shares
+            execution_note = "TA rated the holding Sell, so the portfolio layer exits the position."
+
+        _prepend_execution_note(decisions[symbol], execution_note)
         record = AiTradeRecord(
             trader=TRADER_NAME,
             symbol=symbol,
@@ -1070,32 +1456,179 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
         )
         db_session.add(record)
         available_cash += shares * price
+        remaining_shares = max(0, held_shares - shares)
+        if remaining_shares > 0:
+            active_holdings[symbol]['shares'] = remaining_shares
+        else:
+            active_holdings.pop(symbol, None)
         valid_trades[symbol] = {
             'action': 'sell',
             'shares': shares,
             'reason': decisions[symbol].get('reason', ''),
+            'rating': decisions[symbol].get('rating'),
         }
         logger.info(f"[TA] SELL {symbol}: {shares} 股 @ ${price:.2f}")
 
-    # Recalculate slots after sells
-    remaining_slots_after_sell = remaining_slots + len(sell_candidates)
-    buy_slots = min(len(buy_candidates), remaining_slots_after_sell)
-    if buy_slots > 0:
-        cash_per_slot = available_cash / buy_slots
+    portfolio_value = _portfolio_value(active_holdings, available_cash, price_map)
+    reserve_value = portfolio_value * TA_CASH_RESERVE_PCT if portfolio_value > 0 else 0
+    buy_budget = max(0, available_cash - reserve_value)
+    open_new_slots = max(0, MAX_POSITIONS - len(active_holdings))
 
-    # Process buys
-    buys_done = 0
-    for symbol in buy_candidates:
-        if buys_done >= buy_slots:
-            break
+    buy_meta = {}
+    new_buy_candidates = []
+    existing_topups = []
+    for symbol, dec in decisions.items():
+        rating = _normalize_ta_rating(dec)
+        if rating not in {'BUY', 'OVERWEIGHT'}:
+            continue
+
         price = price_map.get(symbol, 0)
         if price <= 0:
-            logger.warning(f"[TA] {symbol} 无价格数据，跳过买入")
+            _prepend_execution_note(
+                dec,
+                "TA rated this as a buy candidate, but execution skipped it because no current price was available.",
+            )
             continue
-        # Calculate shares: allocate cash_per_slot, buy whole shares
-        max_shares = int(cash_per_slot / price) if price > 0 else 0
+
+        holding = active_holdings.get(symbol)
+        current_value = (holding.get('shares', 0) * price) if holding else 0
+        current_weight = current_value / portfolio_value if portfolio_value > 0 else 0
+        target_weight = _target_weight_for_ta_candidate(dec, price)
+        target_value = portfolio_value * target_weight
+        gap_value = max(0, target_value - current_value)
+
+        if holding and gap_value < portfolio_value * TA_MIN_REBALANCE_WEIGHT:
+            _prepend_execution_note(
+                dec,
+                (
+                    f"TA rated this {rating.title()}, but the existing position is already near "
+                    f"target ({current_weight:.1%} current vs {target_weight:.1%} target), so no top-up was placed."
+                ),
+            )
+            continue
+        if not holding and gap_value < portfolio_value * TA_MIN_NEW_POSITION_WEIGHT:
+            _prepend_execution_note(
+                dec,
+                (
+                    f"TA rated this {rating.title()}, but its target position "
+                    f"({target_weight:.1%}) is below the minimum new-position threshold."
+                ),
+            )
+            continue
+
+        score = _score_ta_buy_candidate(decisions[symbol], price)
+        if holding:
+            score += 8  # Small preference for topping up known holdings over opening new names.
+        upside = _ta_candidate_upside(decisions[symbol], price)
+        buy_meta[symbol] = {
+            'score': score,
+            'upside': upside,
+            'rating': rating,
+            'target_weight': target_weight,
+            'target_value': target_value,
+            'current_weight': current_weight,
+            'current_value': current_value,
+            'gap_value': gap_value,
+            'is_existing': bool(holding),
+        }
+        if holding:
+            existing_topups.append(symbol)
+        else:
+            new_buy_candidates.append(symbol)
+
+    ranked_new_candidates = sorted(
+        new_buy_candidates,
+        key=lambda sym: (
+            -buy_meta[sym]['score'],
+            -TA_RATING_STRENGTH.get(buy_meta[sym]['rating'], 0),
+            symbol_order.get(sym, 9999),
+        ),
+    )
+    selected_new_candidates = ranked_new_candidates[:open_new_slots]
+    skipped_by_cap = ranked_new_candidates[open_new_slots:]
+
+    ranked_candidates = sorted(
+        existing_topups + selected_new_candidates,
+        key=lambda sym: (
+            -buy_meta[sym]['score'],
+            -buy_meta[sym]['target_weight'],
+            symbol_order.get(sym, 9999),
+        ),
+    )
+    all_ranked_candidates = sorted(
+        existing_topups + ranked_new_candidates,
+        key=lambda sym: (
+            -buy_meta[sym]['score'],
+            -buy_meta[sym]['target_weight'],
+            symbol_order.get(sym, 9999),
+        ),
+    )
+    for rank, symbol in enumerate(all_ranked_candidates, start=1):
+        buy_meta[symbol]['rank'] = rank
+
+    for symbol in skipped_by_cap:
+        meta = buy_meta[symbol]
+        _prepend_execution_note(
+            decisions[symbol],
+            (
+                f"TA rated this {meta['rating'].title()}, but it ranked {meta['rank']} "
+                f"among new-position candidates and the portfolio had only "
+                f"{open_new_slots} open slot(s) under the {MAX_POSITIONS}-position cap."
+            ),
+        )
+
+    if new_buy_candidates and open_new_slots <= 0:
+        for symbol in new_buy_candidates:
+            _prepend_execution_note(
+                decisions[symbol],
+                f"TA rated this as a buy candidate, but the portfolio is already at the {MAX_POSITIONS}-position cap.",
+            )
+
+    # Buy the gap to target, in rank order, while preserving cash reserve.
+    buys_done = 0
+    for symbol in ranked_candidates:
+        if buy_budget <= 0:
+            _prepend_execution_note(
+                decisions[symbol],
+                f"TA ranked this for purchase, but available cash above the {TA_CASH_RESERVE_PCT:.0%} reserve was exhausted.",
+            )
+            continue
+
+        price = price_map.get(symbol, 0)
+        meta = buy_meta[symbol]
+        target_cash = min(meta['gap_value'], buy_budget)
+        min_trade_value = (
+            portfolio_value * TA_MIN_REBALANCE_WEIGHT
+            if meta['is_existing']
+            else portfolio_value * TA_MIN_NEW_POSITION_WEIGHT
+        )
+        if target_cash < min_trade_value:
+            _prepend_execution_note(
+                decisions[symbol],
+                (
+                    f"TA ranked this {meta['rank']}/{len(all_ranked_candidates)} for purchase, "
+                    f"but the remaining target gap (${target_cash:,.2f}) is below the "
+                    f"{TA_MIN_REBALANCE_WEIGHT:.0%} rebalance threshold."
+                    if meta['is_existing']
+                    else
+                    f"TA ranked this {meta['rank']}/{len(all_ranked_candidates)} for purchase, "
+                    f"but available cash (${target_cash:,.2f}) is below the "
+                    f"{TA_MIN_NEW_POSITION_WEIGHT:.0%} minimum new-position threshold."
+                ),
+            )
+            continue
+
+        max_shares = int(target_cash / price) if price > 0 else 0
         if max_shares <= 0:
             logger.warning(f"[TA] {symbol} 现金不足买入1股，跳过")
+            _prepend_execution_note(
+                decisions[symbol],
+                (
+                    f"TA ranked this {meta['rank']}/{len(all_ranked_candidates)} "
+                    f"for purchase, but its target gap (${target_cash:,.2f}) "
+                    "was not enough to buy 1 share."
+                ),
+            )
             decisions[symbol]['reason'] = (
                 f"TA建议买入，但模拟账户可用现金不足以买入1股（可用现金 ${available_cash:,.2f}）。\n\n"
                 + decisions[symbol].get('reason', '')
@@ -1103,8 +1636,8 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
             continue
         # Validate against available cash
         cost = max_shares * price
-        if cost > available_cash:
-            max_shares = int(available_cash / price)
+        if cost > buy_budget:
+            max_shares = int(buy_budget / price)
             cost = max_shares * price
         if max_shares <= 0:
             decisions[symbol]['reason'] = (
@@ -1113,6 +1646,19 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
             )
             continue
 
+        upside_text = (
+            f", target upside {meta['upside']:.1%}"
+            if meta.get('upside') is not None else ""
+        )
+        _prepend_execution_note(
+            decisions[symbol],
+            (
+                f"Selected for purchase after ranking {meta['rank']}/{len(all_ranked_candidates)} "
+                f"target-weight candidates. Rating={meta['rating'].title()}, score={meta['score']}, "
+                f"current weight={meta['current_weight']:.1%}, target={meta['target_weight']:.1%}, "
+                f"cash used=${cost:,.2f}{upside_text}."
+            ),
+        )
         record = AiTradeRecord(
             trader=TRADER_NAME,
             symbol=symbol,
@@ -1124,11 +1670,16 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
         )
         db_session.add(record)
         available_cash -= cost
+        buy_budget -= cost
         buys_done += 1
         valid_trades[symbol] = {
             'action': 'buy',
             'shares': max_shares,
             'reason': decisions[symbol].get('reason', ''),
+            'rating': decisions[symbol].get('rating'),
+            'rank': meta['rank'],
+            'score': meta['score'],
+            'target_weight': meta['target_weight'],
         }
         logger.info(f"[TA] BUY {symbol}: {max_shares} 股 @ ${price:.2f}")
 
@@ -1148,6 +1699,7 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
                 'action': 'hold',
                 'shares': 0,
                 'reason': dec.get('reason', ''),
+                'rating': dec.get('rating'),
             }
             logger.info(f"[TA] HOLD {symbol}: 保留分析结果")
 

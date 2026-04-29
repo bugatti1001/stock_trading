@@ -2,7 +2,7 @@
 
 import logging
 import time as _time
-from typing import Dict, Any
+from typing import Callable, Dict, Any
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph, START
 from langgraph.prebuilt import ToolNode
@@ -15,15 +15,32 @@ from .conditional_logic import ConditionalLogic
 logger = logging.getLogger(__name__)
 
 
-def _timed_node(name, fn):
+def _timed_node(name, fn, progress_callback: Callable[[dict], None] | None = None):
     """Wrap a graph node function with timing logs."""
     def wrapper(state):
         t0 = _time.time()
-        result = fn(state)
-        elapsed = _time.time() - t0
         ticker = state.get("company_of_interest", "?")
-        logger.info(f"[TA-TIMING] {ticker} | {name} | {elapsed:.1f}s")
-        return result
+        if progress_callback:
+            progress_callback({
+                "symbol": ticker,
+                "node": name,
+                "status": "started",
+                "timestamp": t0,
+            })
+        try:
+            result = fn(state)
+            return result
+        finally:
+            elapsed = _time.time() - t0
+            logger.info(f"[TA-TIMING] {ticker} | {name} | {elapsed:.1f}s")
+            if progress_callback:
+                progress_callback({
+                    "symbol": ticker,
+                    "node": name,
+                    "status": "completed",
+                    "elapsed": elapsed,
+                    "timestamp": _time.time(),
+                })
     return wrapper
 
 
@@ -129,6 +146,7 @@ class GraphSetup:
         invest_judge_memory=None,
         risk_manager_memory=None,
         conditional_logic: ConditionalLogic = None,
+        progress_callback: Callable[[dict], None] | None = None,
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
@@ -141,6 +159,7 @@ class GraphSetup:
         self.invest_judge_memory = invest_judge_memory
         self.risk_manager_memory = risk_manager_memory
         self.conditional_logic = conditional_logic
+        self.progress_callback = progress_callback
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -192,33 +211,37 @@ class GraphSetup:
 
         # Wrap analyst nodes with timing
         for k in analyst_nodes:
-            analyst_nodes[k] = _timed_node(f"{k.capitalize()} Analyst", analyst_nodes[k])
+            analyst_nodes[k] = _timed_node(
+                f"{k.capitalize()} Analyst",
+                analyst_nodes[k],
+                self.progress_callback,
+            )
 
         # Debate nodes: use analyst_llm (Haiku) for cost savings
         # Only Research Manager & Risk Judge use deep_thinking_llm (Sonnet) for final decisions
         bull_researcher_node = _timed_node("Bull Researcher",
-            create_bull_researcher(self.analyst_llm))
+            create_bull_researcher(self.analyst_llm), self.progress_callback)
         bear_researcher_node = _timed_node("Bear Researcher",
-            create_bear_researcher(self.analyst_llm))
+            create_bear_researcher(self.analyst_llm), self.progress_callback)
         research_manager_node = _timed_node("Research Manager",
-            create_research_manager(self.deep_thinking_llm))
+            create_research_manager(self.deep_thinking_llm), self.progress_callback)
         trader_node = _timed_node("Trader",
-            create_trader(self.analyst_llm))
+            create_trader(self.analyst_llm), self.progress_callback)
 
         # Risk debate nodes: Haiku for debaters, Sonnet for judge
         aggressive_analyst = _timed_node("Aggressive Analyst",
-            create_aggressive_debator(self.analyst_llm))
+            create_aggressive_debator(self.analyst_llm), self.progress_callback)
         neutral_analyst = _timed_node("Neutral Analyst",
-            create_neutral_debator(self.analyst_llm))
+            create_neutral_debator(self.analyst_llm), self.progress_callback)
         conservative_analyst = _timed_node("Conservative Analyst",
-            create_conservative_debator(self.analyst_llm))
+            create_conservative_debator(self.analyst_llm), self.progress_callback)
         risk_manager_node = _timed_node("Risk Judge",
-            create_portfolio_manager(self.deep_thinking_llm))
+            create_portfolio_manager(self.deep_thinking_llm), self.progress_callback)
 
         # Report compressor: uses analyst_llm (cheap) to compress reports
         # before they get duplicated across 8 downstream nodes
         report_compressor = _timed_node("Report Compressor",
-            _create_report_compressor(self.analyst_llm))
+            _create_report_compressor(self.analyst_llm), self.progress_callback)
 
         # Create workflow
         workflow = StateGraph(AgentState)

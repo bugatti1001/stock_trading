@@ -74,6 +74,40 @@
     .score-detail-row td { font-size: 0.8rem; padding: 4px 8px; }
     #scoreTable th { font-size: 0.82rem; white-space: nowrap; }
     #scoreTable td { font-size: 0.82rem; vertical-align: middle; }
+    .ta-progress-stock {
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 7px 8px;
+        margin-bottom: 6px;
+        background: #fff;
+    }
+    .ta-progress-stock .progress { height: 6px; }
+    .ta-progress-stage {
+        max-width: 170px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .ta-progress-events {
+        max-height: 160px;
+        overflow-y: auto;
+        font-size: .76rem;
+        background: #f8f9fa;
+        padding: 6px;
+        border-radius: 4px;
+    }
+    .ta-progress-event {
+        display: flex;
+        gap: 6px;
+        border-bottom: 1px solid #eef0f2;
+        padding: 2px 0;
+    }
+    .ta-progress-event:last-child { border-bottom: 0; }
+    .ta-progress-event-symbol {
+        min-width: 48px;
+        font-weight: 700;
+        color: #374151;
+    }
 </style>
 {% endblock %}
 
@@ -337,6 +371,12 @@ function getTodayStr() {
     return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
 
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
 function scoreClass(score) {
     if (score >= 65) return 'score-high';
     if (score >= 40) return 'score-mid';
@@ -572,7 +612,7 @@ function showTaProgress() {
         modal.className = 'modal fade';
         modal.setAttribute('data-bs-backdrop', 'static');
         modal.setAttribute('data-bs-keyboard', 'false');
-        modal.innerHTML = `<div class="modal-dialog modal-sm">
+        modal.innerHTML = `<div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header py-2">
                     <h6 class="modal-title"><i class="bi bi-people me-1"></i>TradingAgents 分析中</h6>
@@ -583,9 +623,10 @@ function showTaProgress() {
                         <small id="taProgressCount">0/0</small>
                     </div>
                     <div class="progress mb-2">
-                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" id="taProgressBar" style="width:0%"></div>
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" id="taProgressBar" style="width:0%">0%</div>
                     </div>
-                    <div id="taProgressLog" style="max-height:150px;overflow-y:auto;font-size:.78rem;background:#f8f9fa;padding:6px;border-radius:4px;"></div>
+                    <div id="taProgressStocks" class="mb-2"></div>
+                    <div id="taProgressLog" class="ta-progress-events"></div>
                 </div>
             </div>
         </div>`;
@@ -594,27 +635,80 @@ function showTaProgress() {
     document.getElementById('taProgressText').textContent = '准备中...';
     document.getElementById('taProgressCount').textContent = '0/0';
     document.getElementById('taProgressBar').style.width = '0%';
+    document.getElementById('taProgressBar').textContent = '0%';
+    document.getElementById('taProgressStocks').innerHTML = '';
     document.getElementById('taProgressLog').innerHTML = '';
     new bootstrap.Modal(modal).show();
+}
+
+function taProgressStatusClass(status) {
+    if (status === 'completed') return 'bg-success';
+    if (status === 'error') return 'bg-danger';
+    if (status === 'running') return 'bg-primary progress-bar-striped progress-bar-animated';
+    return 'bg-secondary';
+}
+
+function renderTaStockProgress(active) {
+    const entries = Object.entries(active || {});
+    if (!entries.length) return '';
+    return entries.map(([symbol, info]) => {
+        const status = info.status || 'queued';
+        const stagePct = Math.max(0, Math.min(100, Number(info.stage_pct || 0)));
+        const stage = info.stage || (status === 'queued' ? '排队' : '');
+        const idx = Number(info.stage_index || 0);
+        const total = Number(info.stage_total || 0);
+        const meta = total ? `${idx}/${total}` : '';
+        const action = info.action ? ` · ${String(info.action).toUpperCase()}` : '';
+        return `<div class="ta-progress-stock">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+                <div>
+                    <strong>${escapeHtml(symbol)}</strong>
+                    <span class="text-muted small ms-2">${escapeHtml(status)}${escapeHtml(action)}</span>
+                </div>
+                <small class="text-muted ta-progress-stage" title="${escapeHtml(stage)}">${escapeHtml(stage)} ${escapeHtml(meta)}</small>
+            </div>
+            <div class="progress">
+                <div class="progress-bar ${taProgressStatusClass(status)}" style="width:${stagePct}%"></div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function renderTaProgressEvents(events, results) {
+    const eventLines = (events || []).slice(-18).map(evt => {
+        const symbol = evt.symbol ? escapeHtml(evt.symbol) : '';
+        return `<div class="ta-progress-event">
+            <span class="ta-progress-event-symbol">${symbol}</span>
+            <span>${escapeHtml(evt.text || '')}</span>
+        </div>`;
+    });
+    if (eventLines.length) return eventLines.join('');
+
+    return Object.entries(results || {}).map(([s, a]) => {
+        const color = a === 'buy' ? 'text-success' : a === 'sell' ? 'text-danger' : '';
+        return `<div class="${color}">${escapeHtml(s)}: ${escapeHtml(String(a).toUpperCase())}</div>`;
+    }).join('');
 }
 
 function updateTaProgress(data) {
     const total = data.total || 0;
     const completed = data.completed || 0;
-    const pct = total > 0 ? Math.round(completed / total * 100) : 0;
+    const pct = Number.isFinite(Number(data.overall_pct))
+        ? Math.round(Number(data.overall_pct))
+        : (total > 0 ? Math.round(completed / total * 100) : 0);
     document.getElementById('taProgressBar').style.width = pct + '%';
+    document.getElementById('taProgressBar').textContent = pct + '%';
     document.getElementById('taProgressCount').textContent = `${completed}/${total}`;
     const sym = data.current_symbol || '';
+    const phaseText = data.phase === 'preparing' ? '准备数据'
+        : data.phase === 'analyzing' ? '分析中'
+        : data.phase === 'done' ? '完成'
+        : '准备中';
     document.getElementById('taProgressText').textContent = completed < total
-        ? `分析中: ${sym}` : '完成';
-    // Update log with results
+        ? `${phaseText}${sym ? ': ' + sym : ''}` : '完成';
+    document.getElementById('taProgressStocks').innerHTML = renderTaStockProgress(data.active || {});
     const log = document.getElementById('taProgressLog');
-    const results = data.results || {};
-    const lines = Object.entries(results).map(([s, a]) => {
-        const color = a === 'buy' ? 'text-success' : a === 'sell' ? 'text-danger' : '';
-        return `<div class="${color}">${s}: ${a.toUpperCase()}</div>`;
-    });
-    log.innerHTML = lines.join('');
+    log.innerHTML = renderTaProgressEvents(data.events || [], data.results || {});
     log.scrollTop = log.scrollHeight;
 }
 

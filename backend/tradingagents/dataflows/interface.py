@@ -244,6 +244,34 @@ def get_vendor(category: str, method: str = None) -> str:
     # Fall back to category-level configuration
     return config.get("data_vendors", {}).get(category, "default")
 
+
+def _is_stock_analysis_miss(result) -> bool:
+    """Return True when stock_analysis returned a sentinel miss string.
+
+    The stock_analysis vendor reads from the local SQLite DB. Its functions
+    return human-readable strings for misses/errors instead of raising, so the
+    router must recognize those strings to continue to web vendors.
+    """
+    if not isinstance(result, str):
+        return False
+
+    text = result.strip().lower()
+    if not text:
+        return True
+
+    miss_prefixes = (
+        "no data found",
+        "no news found",
+        "no global news found",
+        "no balance sheet data found",
+        "no cash flow data found",
+        "no income statement data found",
+        "error retrieving",
+        "error fetching",
+    )
+    return text.startswith(miss_prefixes)
+
+
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support.
 
@@ -279,7 +307,14 @@ def route_to_vendor(method: str, *args, **kwargs):
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
         try:
-            return impl_func(*args, **kwargs)
+            result = impl_func(*args, **kwargs)
+            if vendor == "stock_analysis" and _is_stock_analysis_miss(result):
+                logger.info(
+                    "[DataRouter] stock_analysis miss for %s; falling back to next vendor",
+                    method,
+                )
+                continue
+            return result
         except AlphaVantageRateLimitError:
             continue  # Only rate limits trigger fallback
 
