@@ -92,13 +92,33 @@ def _gather_financial_text(symbol: str, stock_name: str, target_years: List[int]
     texts = []
 
     # Strategy 1: Try well-known financial data sites directly
-    ticker = symbol.replace('SH', '').replace('SZ', '').replace('HK', '')
-    urls_to_try = [
-        f"https://www.macrotrends.net/stocks/charts/{ticker}/{ticker}/financial-statements",
-        f"https://stockanalysis.com/stocks/{ticker.lower()}/financials/",
-        f"https://stockanalysis.com/stocks/{ticker.lower()}/financials/balance-sheet/",
-        f"https://stockanalysis.com/stocks/{ticker.lower()}/financials/cash-flow-statement/",
-    ]
+    is_hk = symbol.startswith('HK') or symbol.endswith('.HK')
+    is_cn = symbol.startswith('SH') or symbol.startswith('SZ')
+    ticker = symbol.replace('SH', '').replace('SZ', '').replace('HK', '').replace('.HK', '')
+
+    if is_hk:
+        # Hong Kong stocks: use HK-aware sources
+        urls_to_try = [
+            f"https://stockanalysis.com/quote/hkse/{ticker}/financials/",
+            f"https://stockanalysis.com/quote/hkse/{ticker}/financials/balance-sheet/",
+            f"https://stockanalysis.com/quote/hkse/{ticker}/financials/cash-flow-statement/",
+            f"https://finance.yahoo.com/quote/{ticker}.HK/financials/",
+        ]
+    elif is_cn:
+        # China A-shares: use CN-aware sources
+        urls_to_try = [
+            f"https://finance.yahoo.com/quote/{ticker}.SS/financials/" if symbol.startswith('SH') else f"https://finance.yahoo.com/quote/{ticker}.SZ/financials/",
+        ]
+    else:
+        # US stocks (including OTC ADRs like XIACY, TCEHY, BABA)
+        urls_to_try = [
+            f"https://www.macrotrends.net/stocks/charts/{ticker}/{ticker}/financial-statements",
+            f"https://stockanalysis.com/stocks/{ticker.lower()}/financials/",
+            f"https://stockanalysis.com/stocks/{ticker.lower()}/financials/balance-sheet/",
+            f"https://stockanalysis.com/stocks/{ticker.lower()}/financials/cash-flow-statement/",
+            # OTC ADRs may not be on the above sites, try Yahoo Finance as fallback
+            f"https://finance.yahoo.com/quote/{ticker}/financials/",
+        ]
 
     for url in urls_to_try:
         text = _fetch_page_text(url)
@@ -111,7 +131,11 @@ def _gather_financial_text(symbol: str, stock_name: str, target_years: List[int]
     # Strategy 2: If we got very little, try Google search
     if len('\n'.join(texts)) < 2000:
         year_str = ' '.join(str(y) for y in target_years[:2])
-        search_results = _google_search(f"{symbol} {stock_name} annual financial data {year_str} revenue net income total assets")
+        market_hint = "Hong Kong" if is_hk else "China A-share" if is_cn else "stock"
+        search_results = _google_search(f"{symbol} {stock_name} {market_hint} annual financial data {year_str} revenue net income total assets")
+        if not search_results and stock_name:
+            # Retry with just company name for OTC/ADR stocks
+            search_results = _google_search(f"{stock_name} annual report financial statements {year_str} revenue net income")
         for item in search_results:
             text = _fetch_page_text(item['url'])
             if text and len(text) > 500:
@@ -119,6 +143,21 @@ def _gather_financial_text(symbol: str, stock_name: str, target_years: List[int]
                 logger.info(f"[AI Backfill] Fetched {len(text)} chars from {item['url']}")
             if len('\n'.join(texts)) > 30000:
                 break
+
+    # Strategy 3: If still not enough, try yfinance API (works for most tickers including OTC ADRs)
+    if len('\n'.join(texts)) < 2000:
+        try:
+            import yfinance as yf
+            t = yf.Ticker(symbol)
+            yf_texts = []
+            for stmt_name, stmt in [("Income Statement", t.income_stmt), ("Balance Sheet", t.balance_sheet), ("Cash Flow", t.cashflow)]:
+                if stmt is not None and not stmt.empty:
+                    yf_texts.append(f"=== {stmt_name} (via yfinance) ===\n{stmt.to_string()}")
+            if yf_texts:
+                texts.extend(yf_texts)
+                logger.info(f"[AI Backfill] yfinance fallback: got {len(yf_texts)} statements for {symbol}")
+        except Exception as e:
+            logger.warning(f"[AI Backfill] yfinance fallback failed for {symbol}: {e}")
 
     combined = '\n\n'.join(texts)
     logger.info(f"[AI Backfill] Total gathered text: {len(combined)} chars from {len(texts)} sources")

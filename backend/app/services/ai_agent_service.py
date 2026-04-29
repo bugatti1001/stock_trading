@@ -591,64 +591,51 @@ def ai_trade_chat_stream(trade_id: int, user_message: str) -> Iterator[str]:
 
 def generate_dashboard_insight() -> str:
     """
-    生成 Dashboard AI 选股建议
-    基于：持仓股票数据 + 激活的 UserPrinciple
-    返回 Markdown 格式字符串
+    生成 Dashboard AI 选股建议。
+    直接从 AI 今日交易记录生成，与 AI 交易共用同一套决策结果，不再独立调 AI。
+    如果今天还没有 AI 交易记录，提示用户先执行 AI 交易。
     """
-    stocks_summary: str = build_stocks_summary()
-    principles_summary: str = build_principles_summary()
+    from datetime import date as date_type
+    from app.models.ai_trade_record import AiTradeRecord
 
-    from app.services.news_analysis_service import build_news_analysis_summary
-    news_summary: str = build_news_analysis_summary()
+    today = date_type.today()
+    today_records = db_session.query(AiTradeRecord).filter(
+        AiTradeRecord.trade_date == today,
+        ~AiTradeRecord.reason.like('%初始化%'),
+        ~AiTradeRecord.reason.like('%重置%'),
+    ).all()
 
-    # 内在价值估值摘要
-    try:
-        from app.services.valuation_service import build_valuation_summary_all
-        valuation_summary: str = build_valuation_summary_all()
-    except Exception:
-        valuation_summary = '（估值数据暂不可用）'
+    if not today_records:
+        return '📭 今日尚未执行 AI 模拟交易。请先点击「AI 交易」生成今日交易决策，选股建议将基于交易结果生成。'
 
-    if stocks_summary == "（暂无持仓股票数据）":
-        return '📭 股票池暂无数据，请先在「股票池」中添加股票并刷新财务数据。'
+    # 按买入/卖出分组
+    buys = [r for r in today_records if r.action == 'buy']
+    sells = [r for r in today_records if r.action == 'sell']
 
-    from datetime import datetime, timezone
-    today_str: str = datetime.now(timezone.utc).strftime('%Y-%m-%d (%A)')
+    lines = []
+    if buys:
+        lines.append('### 🟢 AI 建议买入/加仓\n')
+        for r in buys:
+            amount = round(r.shares * r.price, 2)
+            lines.append(f'- **{r.symbol}** — {r.shares}股 @${r.price:.2f}（${amount:,.0f}）')
+            if r.reason:
+                lines.append(f'  > {r.reason}')
+            lines.append('')
 
-    prompt: str = f"""你是一名基本面投资助手。请根据以下信息，给出今日（{today_str}）持仓关注建议。
+    if sells:
+        lines.append('### 🔴 AI 建议卖出/减仓\n')
+        for r in sells:
+            amount = round(r.shares * r.price, 2)
+            lines.append(f'- **{r.symbol}** — {r.shares}股 @${r.price:.2f}（${amount:,.0f}）')
+            if r.reason:
+                lines.append(f'  > {r.reason}')
+            lines.append('')
 
-【持仓股票数据】
-{stocks_summary}
+    holds = [r for r in today_records if r.action == 'hold']
+    if holds:
+        hold_symbols = ', '.join(r.symbol for r in holds)
+        lines.append(f'### ⚪ 维持持仓不变：{hold_symbols}\n')
 
-【内在价值估值】
-{valuation_summary}
+    lines.append(f'---\n*基于 {today.strftime("%Y-%m-%d")} AI 模拟交易决策，共 {len(buys)} 买 / {len(sells)} 卖*')
 
-【用户个人投资原则】
-{principles_summary}
-
-【近期新闻分析】
-{news_summary}
-
-请：
-1. 🟢 **建议买入/加仓**：从持仓股票中选出 4 只当前最值得买入或加仓的（结合基本面数据、内在价值安全边际和近期新闻给出具体理由，引用安全边际MoS数据）
-2. 🔴 **建议卖出/减仓**：从持仓股票中选出 4 只当前应考虑卖出或减仓的（MoS为负说明高估、基本面走弱、负面新闻或违反用户原则的信号，给出具体理由）
-3. 一句话总结当前持仓整体质量和操作方向
-
-要求：
-- 今天是 {today_str}，请结合当日新闻热点和市场环境给出有时效性的建议
-- 买入建议必须选MoS为正（低估）的股票，卖出建议优先选MoS为负（高估）的股票
-- 买入和卖出各选 4 只，共 8 只，不足时可以少选但需说明原因
-- 只基于上方数据作出判断，数据不足时说明
-- 用 Markdown 格式，简洁专业，不超过 500 字
-- 标题用 **加粗**，用 emoji 辅助区分（🟢 买入 / 🔴 卖出）
-- 在评判时，以用户的个人投资原则为核心标准
-- 在建议理由中引用具体的内在价值和安全边际数据"""
-
-    try:
-        from app.services.ai_client import create_message
-        return create_message(
-            messages=[{'role': 'user', 'content': prompt}],
-            max_tokens=AI_TRADE_MAX_TOKENS,
-        )
-    except Exception as e:
-        logger.error(f"generate_dashboard_insight 失败: {e}", exc_info=True)
-        return f'⚠️ AI 建议生成失败：{str(e)}'
+    return '\n'.join(lines)

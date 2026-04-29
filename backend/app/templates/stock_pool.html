@@ -898,12 +898,15 @@ const MARKET_LABELS = {CN: 'A股', HK: '港股', US: '美股'};
 const MARKET_COLORS = {CN: 'danger', HK: 'warning', US: 'primary'};
 
 async function searchStock() {
-    const q = document.getElementById('searchInput').value.trim();
+    const searchInput = document.getElementById('searchInput');
+    const q = searchInput ? searchInput.value.trim() : '';
     if (!q) { alert('请输入搜索关键词'); return; }
 
     const btn = document.getElementById('searchBtn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    }
 
     try {
         const res = await fetch(`/api/stocks/search?q=${encodeURIComponent(q)}`);
@@ -915,59 +918,74 @@ async function searchStock() {
         const list = document.getElementById('searchResultsList');
 
         if (!results.length) {
-            box.style.display = 'block';
-            list.innerHTML = '<div class="text-muted small py-2">未找到匹配的股票</div>';
+            if (box) box.style.display = 'block';
+            if (list) list.innerHTML = '<div class="text-muted small py-2">未找到匹配的股票</div>';
             return;
         }
 
         if (results.length === 1) {
             // 唯一结果：直接选中
             selectStock(results[0]);
-            box.style.display = 'none';
+            if (box) box.style.display = 'none';
             return;
         }
 
         // 多个结果：显示列表供选择
-        box.style.display = 'block';
-        list.innerHTML = '<div class="text-muted small mb-2">找到多个结果，请选择：</div>' +
-            '<div class="list-group">' +
-            results.map(r => `
-                <button type="button" class="list-group-item list-group-item-action py-2 d-flex align-items-center gap-2"
-                        onclick='selectStock(${JSON.stringify(r).replace(/'/g, "&#39;")})'>
-                    <span class="badge bg-${MARKET_COLORS[r.market] || 'secondary'}" style="min-width:36px">${MARKET_LABELS[r.market] || r.market}</span>
-                    <strong>${r.symbol}</strong>
-                    <span>${r.name}</span>
-                    <span class="text-muted ms-auto">${r.current_price || ''}</span>
-                </button>
-            `).join('') +
-            '</div>';
+        if (box) box.style.display = 'block';
+        if (list) {
+            list.innerHTML = '<div class="text-muted small mb-2">找到多个结果，请选择：</div>' +
+                '<div class="list-group">' +
+                results.map(r => `
+                    <button type="button" class="list-group-item list-group-item-action py-2 d-flex align-items-center gap-2"
+                            onclick='selectStock(${JSON.stringify(r).replace(/'/g, "&#39;")})'>
+                        <span class="badge bg-${MARKET_COLORS[r.market] || 'secondary'}" style="min-width:36px">${MARKET_LABELS[r.market] || r.market}</span>
+                        <strong>${r.symbol}</strong>
+                        <span>${r.name}</span>
+                        <span class="text-muted ms-auto">${r.current_price || ''}</span>
+                    </button>
+                `).join('') +
+                '</div>';
+        }
     } catch (e) {
         alert(`搜索出错: ${e.message}`);
     } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-search me-1"></i>搜索';
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-search me-1"></i>搜索';
+        }
     }
 }
 
 function selectStock(stock) {
-    document.getElementById('symbol').value = stock.symbol;
-    document.getElementById('name').value = stock.name || '';
-    document.getElementById('searchResults').style.display = 'none';
-
+    const symbolEl = document.getElementById('symbol');
+    const nameEl = document.getElementById('name');
+    const searchResultsEl = document.getElementById('searchResults');
     const info = document.getElementById('selectedStockInfo');
-    const mLabel = MARKET_LABELS[stock.market] || stock.market;
-    const mColor = MARKET_COLORS[stock.market] || 'secondary';
-    info.innerHTML = `<span class="badge bg-${mColor} me-1">${mLabel}</span> <strong>${stock.symbol}</strong> ${stock.name} <span class="text-muted ms-1">${stock.current_price || ''}</span>`;
-    document.getElementById('selectedStock').style.display = 'block';
-    document.getElementById('searchInput').value = '';
+    const selectedStockEl = document.getElementById('selectedStock');
+    const searchInputEl = document.getElementById('searchInput');
+
+    if (symbolEl) symbolEl.value = stock.symbol;
+    if (nameEl) nameEl.value = stock.name || '';
+    if (searchResultsEl) searchResultsEl.style.display = 'none';
+
+    if (info) {
+        const mLabel = MARKET_LABELS[stock.market] || stock.market || '';
+        const mColor = MARKET_COLORS[stock.market] || 'secondary';
+        info.innerHTML = `<span class="badge bg-${mColor} me-1">${mLabel}</span> <strong>${stock.symbol}</strong> ${stock.name} <span class="text-muted ms-1">${stock.current_price || ''}</span>`;
+    }
+    if (selectedStockEl) selectedStockEl.style.display = 'block';
+    if (searchInputEl) searchInputEl.value = '';
 }
 
 function clearSelection() {
-    document.getElementById('symbol').value = '';
-    document.getElementById('name').value = '';
-    document.getElementById('selectedStock').style.display = 'none';
-    document.getElementById('searchInput').value = '';
-    document.getElementById('searchInput').focus();
+    const symbolEl = document.getElementById('symbol');
+    const nameEl = document.getElementById('name');
+    const selectedStockEl = document.getElementById('selectedStock');
+    const searchInputEl = document.getElementById('searchInput');
+    if (symbolEl) symbolEl.value = '';
+    if (nameEl) nameEl.value = '';
+    if (selectedStockEl) selectedStockEl.style.display = 'none';
+    if (searchInputEl) { searchInputEl.value = ''; searchInputEl.focus(); }
 }
 
 /* ---- 统一入口 ---- */

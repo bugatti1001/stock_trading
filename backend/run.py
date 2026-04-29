@@ -4,6 +4,18 @@ Stock Trading Analysis System - Main Entry Point
 """
 import sys
 import os
+import logging
+
+# Enable logging for TradingAgents internals (TA-TIMING, DataCache, etc.)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(name)s %(message)s',
+)
+# Also write to /tmp/stock_analysis.log so TA-TIMING is always captured
+_fh = logging.FileHandler('/tmp/stock_analysis.log', mode='a')
+_fh.setLevel(logging.INFO)
+_fh.setFormatter(logging.Formatter('%(asctime)s %(name)s %(message)s'))
+logging.getLogger().addHandler(_fh)
 
 # 确保 .env 从脚本所在目录加载，不受工作目录影响
 from dotenv import load_dotenv
@@ -92,7 +104,8 @@ Press CTRL+C to stop the server
     app.run(
         host='0.0.0.0',
         port=port,
-        debug=os.getenv('DEBUG', 'True').lower() == 'true'
+        debug=os.getenv('DEBUG', 'True').lower() == 'true',
+        use_reloader=False  # Disable auto-reload to prevent interrupting TA runs
     )
 
 

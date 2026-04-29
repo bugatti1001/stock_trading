@@ -87,15 +87,23 @@ def _build_financials_cache(symbol: str) -> dict:
     if not stock:
         return {}
 
-    # Get last 8 quarters of financial data (2 years)
+    # Get up to 12 quarters of financial data (3 years)
     records = (
         db_session.query(FinancialData)
         .filter_by(stock_id=stock.id)
         .order_by(FinancialData.fiscal_year.desc(), FinancialData.report_date.desc())
-        .limit(8)
+        .limit(12)
         .all()
     )
     if not records:
+        logger.info(f"[DataCache] {symbol}: 本地无财务数据，将 fallback 到网络获取")
+        return {}
+
+    # Count how many distinct fiscal years we have
+    distinct_years = len(set(r.fiscal_year for r in records))
+    if distinct_years < 3:
+        logger.info(f"[DataCache] {symbol}: 本地仅 {distinct_years} 年财务数据 (需要3年)，"
+                     f"不缓存财务数据，允许 TA 从网络补充")
         return {}
 
     cache = {}
@@ -520,11 +528,16 @@ def _get_ta_config() -> dict:
     # Risk Judge writes detailed final decisions (~5000-8000 chars); 8192 truncates them
     config['max_tokens'] = 16384
 
+    # Analyst LLM: use Haiku for data analysis (12x cheaper than Sonnet)
+    # Debate/judge LLMs: keep Sonnet for quality reasoning
+    ANALYST_MODEL = 'claude-haiku-4-5'  # 分析师用Haiku (省75%成本, 快3x)
+
     if provider == 'claude':
         api_key = get_anthropic_key()
         config['llm_provider'] = 'anthropic'
         config['deep_think_llm'] = AI_MODEL
         config['quick_think_llm'] = AI_MODEL
+        config['analyst_llm'] = ANALYST_MODEL
         config['backend_url'] = None
         config['api_key'] = api_key
     elif provider == 'openai':
@@ -539,6 +552,7 @@ def _get_ta_config() -> dict:
         config['llm_provider'] = 'openai'
         config['deep_think_llm'] = MINIMAX_DEFAULT_MODEL
         config['quick_think_llm'] = MINIMAX_DEFAULT_MODEL
+        config['analyst_llm'] = MINIMAX_DEFAULT_MODEL  # no Haiku for minimax
         config['backend_url'] = MINIMAX_BASE_URL
         config['api_key'] = api_key
     elif provider == 'nvidia':
@@ -554,6 +568,7 @@ def _get_ta_config() -> dict:
         config['llm_provider'] = 'anthropic'
         config['deep_think_llm'] = AI_MODEL
         config['quick_think_llm'] = AI_MODEL
+        config['analyst_llm'] = ANALYST_MODEL
         config['backend_url'] = None
         config['api_key'] = api_key
 
@@ -847,23 +862,36 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
 
     today = date_type.today()
 
-    # 1. Check if already executed today
-    today_records = (
-        db_session.query(AiTradeRecord)
-        .filter(
-            AiTradeRecord.trader == TRADER_NAME,
-            AiTradeRecord.trade_date == today,
-            ~AiTradeRecord.reason.like('%初始化%'),
-            ~AiTradeRecord.reason.like('%重置%'),
+    # 1. Check if already executed today (skip when user manually selected stocks)
+    if not selected_symbols:
+        today_records = (
+            db_session.query(AiTradeRecord)
+            .filter(
+                AiTradeRecord.trader == TRADER_NAME,
+                AiTradeRecord.trade_date == today,
+                ~AiTradeRecord.reason.like('%初始化%'),
+                ~AiTradeRecord.reason.like('%重置%'),
+            )
+            .all()
         )
-        .all()
-    )
-    if today_records:
-        logger.info("[TA] 今日已执行过，返回已有记录")
-        return {
-            r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
-            for r in today_records if r.action in ('buy', 'sell')
-        }
+        if today_records:
+            logger.info("[TA] 今日已执行过，返回已有记录")
+            return {
+                r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
+                for r in today_records if r.action in ('buy', 'sell')
+            }
+    else:
+        # Delete old records for selected symbols so they can be re-analyzed
+        for sym in selected_symbols:
+            db_session.query(AiTradeRecord).filter(
+                AiTradeRecord.trader == TRADER_NAME,
+                AiTradeRecord.trade_date == today,
+                AiTradeRecord.symbol == sym.upper(),
+                ~AiTradeRecord.reason.like('%初始化%'),
+                ~AiTradeRecord.reason.like('%重置%'),
+            ).delete()
+        db_session.commit()
+        logger.info(f"[TA] 手动重跑: {selected_symbols}, 已删除旧记录")
 
     # 2. Get stock symbols (selected or all in-pool)
     if selected_symbols:
@@ -877,8 +905,8 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
         logger.warning("[TA] 无股票可分析")
         return {}
 
-    symbols = [s.symbol for s in stocks]
-    logger.info(f"[TA] 股票池 ({len(symbols)}): {symbols}")
+    all_symbols = [s.symbol for s in stocks]
+    logger.info(f"[TA] 股票池 ({len(all_symbols)}): {all_symbols}")
 
     # Build price map from current stock prices
     price_map = {}
@@ -889,6 +917,42 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
     # 3. Get ta_holdings and ta_cash
     ta_holdings = compute_ta_holdings()
     ta_cash = compute_ta_cash()
+
+    # F5: Smart filtering — only analyze stocks that matter
+    # Skip filtering when user explicitly selects stocks
+    if selected_symbols:
+        symbols = all_symbols
+        logger.info(f"[TA] 用户指定股票，跳过智能过滤，分析全部 {len(symbols)} 只")
+    else:
+        # Auto mode: filter to held stocks + high-priority candidates
+        held_symbols = set(ta_holdings.keys())
+        priority_symbols = set()
+        for s in stocks:
+            sym = s.symbol
+            # Always analyze held stocks (might need to sell)
+            if sym in held_symbols:
+                priority_symbols.add(sym)
+                continue
+            # Analyze stocks with ai_score >= 70 (potential buy candidates)
+            if hasattr(s, 'ai_score') and s.ai_score and s.ai_score >= 70:
+                priority_symbols.add(sym)
+                continue
+            # Analyze stocks with significant recent price change (>3%)
+            if hasattr(s, 'price_change_pct') and s.price_change_pct and abs(s.price_change_pct) >= 3.0:
+                priority_symbols.add(sym)
+                continue
+
+        # If no priority stocks found, fall back to all
+        if not priority_symbols:
+            symbols = all_symbols
+            logger.info(f"[TA] 无优先股票，分析全部 {len(symbols)} 只")
+        else:
+            symbols = [s for s in all_symbols if s in priority_symbols]
+            skipped = len(all_symbols) - len(symbols)
+            logger.info(
+                f"[TA] 智能过滤: 分析 {len(symbols)} 只 (持仓{len(held_symbols)}只 + 高分/大波动), "
+                f"跳过 {skipped} 只低优先级股票"
+            )
     if ta_cash < 0:
         ta_cash = 0
 
@@ -1053,18 +1117,27 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
         }
         logger.info(f"[TA] BUY {symbol}: {max_shares} 股 @ ${price:.2f}")
 
-    # 7. If no trades, save _HOLD record
+    # 7. Save HOLD records for stocks that were analyzed but not traded
+    for symbol, dec in decisions.items():
+        if symbol not in valid_trades and dec.get('reason'):
+            db_session.add(AiTradeRecord(
+                trader=TRADER_NAME,
+                symbol=symbol,
+                action='hold',
+                shares=0,
+                price=price_map.get(symbol, 0),
+                trade_date=today,
+                reason=dec.get('reason', ''),
+            ))
+            valid_trades[symbol] = {
+                'action': 'hold',
+                'shares': 0,
+                'reason': dec.get('reason', ''),
+            }
+            logger.info(f"[TA] HOLD {symbol}: 保留分析结果")
+
     if not valid_trades:
-        db_session.add(AiTradeRecord(
-            trader=TRADER_NAME,
-            symbol='_HOLD',
-            action='hold',
-            shares=0,
-            price=0,
-            trade_date=today,
-            reason='TradingAgents 今日无操作：所有股票建议持有或条件不满足',
-        ))
-        logger.info("[TA] 今日无交易")
+        logger.info("[TA] 今日无分析结果")
 
     try:
         db_session.commit()

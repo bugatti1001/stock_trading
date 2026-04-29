@@ -368,38 +368,43 @@ def ta_trades():
         today = date_type.today()
 
         # 前置检查1：今天是否已执行过 TA 交易
-        today_records = db_session.query(AiTradeRecord).filter(
-            AiTradeRecord.trade_date == today,
-            AiTradeRecord.trader == 'tradingagents',
-            ~AiTradeRecord.reason.like('%初始化%'),
-            ~AiTradeRecord.reason.like('%重置%'),
-        ).all()
-        if today_records:
-            trades = {
-                r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
-                for r in today_records if r.action in ('buy', 'sell')
-            }
-            hold_record = any(r.action == 'hold' for r in today_records)
-            msg = '今日TA已决定不交易' if hold_record and not trades else '今日TA交易已执行'
-            return success_response(trades=trades, already_executed=True, message=msg)
-
-        # 前置检查2：当日新闻分析是否过半完成
-        from app.services.news_analysis_service import _get_existing_today_symbols
-        from app.models.stock import Stock
-        pool_symbols = {s.symbol for s in db_session.query(Stock.symbol).filter_by(in_pool=True).all()}
-        analyzed_symbols = _get_existing_today_symbols()
-        analyzed_count = len(analyzed_symbols)
-        total_count = len(pool_symbols)
-        if total_count > 0 and analyzed_count < total_count / 2:
-            return error_response(
-                f'请先完成当日新闻分析再执行TA交易（需过半）。'
-                f'已分析 {analyzed_count}/{total_count} 只',
-                400,
-            )
-
-        from app.services.tradingagents_service import generate_ta_trades
+        # 如果用户手动选择了股票 (selected_symbols)，跳过此检查，允许重跑
         data = request.get_json(silent=True) or {}
         selected_symbols = data.get('symbols')  # Optional list like ["AAPL", "GOOG"]
+        force = data.get('force', False)
+
+        if not selected_symbols and not force:
+            today_records = db_session.query(AiTradeRecord).filter(
+                AiTradeRecord.trade_date == today,
+                AiTradeRecord.trader == 'tradingagents',
+                ~AiTradeRecord.reason.like('%初始化%'),
+                ~AiTradeRecord.reason.like('%重置%'),
+            ).all()
+            if today_records:
+                trades = {
+                    r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
+                    for r in today_records if r.action in ('buy', 'sell')
+                }
+                hold_record = any(r.action == 'hold' for r in today_records)
+                msg = '今日TA已决定不交易' if hold_record and not trades else '今日TA交易已执行'
+                return success_response(trades=trades, already_executed=True, message=msg)
+
+        # 前置检查2：当日新闻分析是否过半完成（手动选择股票时跳过）
+        if not selected_symbols:
+            from app.services.news_analysis_service import _get_existing_today_symbols
+            from app.models.stock import Stock
+            pool_symbols = {s.symbol for s in db_session.query(Stock.symbol).filter_by(in_pool=True).all()}
+            analyzed_symbols = _get_existing_today_symbols()
+            analyzed_count = len(analyzed_symbols)
+            total_count = len(pool_symbols)
+            if total_count > 0 and analyzed_count < total_count / 2:
+                return error_response(
+                    f'请先完成当日新闻分析再执行TA交易（需过半）。'
+                    f'已分析 {analyzed_count}/{total_count} 只',
+                    400,
+                )
+
+        from app.services.tradingagents_service import generate_ta_trades
         trades = generate_ta_trades(selected_symbols=selected_symbols)
         return success_response(trades=trades)
     except Exception as e:
