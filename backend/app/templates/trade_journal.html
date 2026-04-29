@@ -161,8 +161,11 @@
         background: #fff;
     }
     .ta-rec-buy { border-left-color: #198754; }
+    .ta-rec-overweight { border-left-color: #0d9488; }
     .ta-rec-sell { border-left-color: #dc3545; }
+    .ta-rec-underweight { border-left-color: #f59e0b; }
     .ta-rec-hold { border-left-color: #6c757d; }
+    .ta-rec-neutral { border-left-color: #64748b; }
     .ta-rec-symbol {
         font-family: 'Courier New', monospace;
         font-size: 1.15rem;
@@ -775,25 +778,122 @@ function summarizeTaReason(reason) {
     return preferred.length > 150 ? preferred.slice(0, 150) + '...' : preferred;
 }
 
+function normalizeTaAction(action) {
+    return String(action || 'hold')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/g, '_');
+}
+
+function normalizeTaRatingLabel(label) {
+    const normalized = normalizeTaAction(label);
+    const aliases = {
+        'buy': 'buy',
+        'strong_buy': 'strong_buy',
+        '买入': 'buy',
+        '强烈买入': 'strong_buy',
+        'overweight': 'overweight',
+        '增持': 'overweight',
+        '加仓': 'overweight',
+        'hold': 'hold',
+        '持有': 'hold',
+        '观望': 'hold',
+        'neutral': 'neutral',
+        '中性': 'neutral',
+        'market_weight': 'market_weight',
+        'marketweight': 'market_weight',
+        'equal_weight': 'equal_weight',
+        'equalweight': 'equal_weight',
+        'underweight': 'underweight',
+        '减持': 'underweight',
+        '降配': 'underweight',
+        'sell': 'sell',
+        'strong_sell': 'strong_sell',
+        '卖出': 'sell',
+        '强烈卖出': 'strong_sell',
+    };
+    return aliases[normalized] || normalized;
+}
+
+function inferTaRatingFromReason(reason) {
+    const text = String(reason || '');
+    if (!text.trim()) return '';
+    const ratingWords = '(Strong Buy|Buy|Overweight|Hold|Neutral|Market Weight|Equal Weight|Underweight|Sell|Strong Sell|强烈买入|买入|增持|加仓|持有|观望|中性|减持|降配|卖出|强烈卖出)';
+    const patterns = [
+        new RegExp(`\\*\\*\\s*Rating\\s*\\*\\*\\s*[:：]\\s*\\**\\s*${ratingWords}`, 'i'),
+        new RegExp(`(?:^|\\n)\\s*(?:Rating|Recommendation|Final\\s+Rating|Final\\s+Decision|Portfolio\\s+Decision|最终评级|最终建议|最终决策|评级|建议)\\s*[:：]\\s*\\**\\s*${ratingWords}`, 'i'),
+        new RegExp(`FINAL\\s+TRANSACTION\\s+PROPOSAL\\s*[:：]\\s*\\**\\s*${ratingWords}`, 'i'),
+    ];
+
+    for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) return normalizeTaRatingLabel(match[1]);
+    }
+    return '';
+}
+
+function taDisplayAction(trade) {
+    const inferred = inferTaRatingFromReason(trade && trade.reason);
+    return inferred || normalizeTaRatingLabel(trade && trade.action);
+}
+
+function taActionGroup(action) {
+    const normalized = normalizeTaRatingLabel(action);
+    if (['buy', 'strong_buy', 'overweight', 'accumulate', 'add', 'long'].includes(normalized)) return 'buy';
+    if (['sell', 'strong_sell', 'underweight', 'reduce', 'trim', 'short'].includes(normalized)) return 'sell';
+    return 'hold';
+}
+
 function taActionMeta(action) {
-    if (action === 'buy') {
+    const normalized = normalizeTaRatingLabel(action);
+    if (normalized === 'overweight') {
         return {
-            label: '买入推荐',
-            shortLabel: '买入',
+            label: '增持 / Overweight',
+            shortLabel: '增持',
+            icon: 'bi-graph-up-arrow',
+            badge: 'bg-info text-dark',
+            row: 'table-info',
+            card: 'ta-rec-overweight',
+        };
+    }
+    if (normalized === 'underweight') {
+        return {
+            label: '减持 / Underweight',
+            shortLabel: '减持',
+            icon: 'bi-graph-down-arrow',
+            badge: 'bg-warning text-dark',
+            row: 'table-warning',
+            card: 'ta-rec-underweight',
+        };
+    }
+    if (['buy', 'strong_buy', 'accumulate', 'add', 'long'].includes(normalized)) {
+        return {
+            label: normalized === 'strong_buy' ? '强烈买入' : '买入推荐',
+            shortLabel: normalized === 'strong_buy' ? '强买' : '买入',
             icon: 'bi-arrow-up-circle',
             badge: 'bg-success',
             row: 'table-success',
             card: 'ta-rec-buy',
         };
     }
-    if (action === 'sell') {
+    if (['sell', 'strong_sell', 'reduce', 'trim', 'short'].includes(normalized)) {
         return {
-            label: '卖出推荐',
-            shortLabel: '卖出',
+            label: normalized === 'strong_sell' ? '强烈卖出' : '卖出推荐',
+            shortLabel: normalized === 'strong_sell' ? '强卖' : '卖出',
             icon: 'bi-arrow-down-circle',
             badge: 'bg-danger',
             row: 'table-danger',
             card: 'ta-rec-sell',
+        };
+    }
+    if (['neutral', 'market_weight', 'marketweight', 'equal_weight', 'equalweight'].includes(normalized)) {
+        return {
+            label: '中性 / Neutral',
+            shortLabel: '中性',
+            icon: 'bi-dash-circle',
+            badge: 'bg-primary',
+            row: 'table-primary',
+            card: 'ta-rec-neutral',
         };
     }
     return {
@@ -1042,7 +1142,7 @@ function setTaTradeFilter(filter) {
 }
 
 function matchesTaFilter(trade) {
-    return taTradeFilter === 'all' || trade.action === taTradeFilter;
+    return taTradeFilter === 'all' || taActionGroup(taDisplayAction(trade)) === taTradeFilter;
 }
 
 function renderTaTradeHistory() {
@@ -1052,9 +1152,9 @@ function renderTaTradeHistory() {
     const latestBatch = taTrades.filter(t => (t.trade_date || '') === latestDate);
     const latestSymbols = new Set(latestBatch.map(t => t.symbol).filter(Boolean));
     const counts = {
-        buy: latestBatch.filter(t => t.action === 'buy').length,
-        sell: latestBatch.filter(t => t.action === 'sell').length,
-        hold: latestBatch.filter(t => t.action === 'hold').length,
+        buy: latestBatch.filter(t => taActionGroup(taDisplayAction(t)) === 'buy').length,
+        sell: latestBatch.filter(t => taActionGroup(taDisplayAction(t)) === 'sell').length,
+        hold: latestBatch.filter(t => taActionGroup(taDisplayAction(t)) === 'hold').length,
     };
 
     document.getElementById('taRunMeta').textContent = latestDate
@@ -1091,13 +1191,18 @@ function renderTaRecommendationBoard(latestBatch) {
 
     empty.style.display = 'none';
     board.innerHTML = visible.map(t => {
-        const meta = taActionMeta(t.action);
+        const displayAction = taDisplayAction(t);
+        const meta = taActionMeta(displayAction);
         const reason = t.reason || '';
         const reasonSummary = summarizeTaReason(reason);
         const priceText = t.price ? '$' + Number(t.price).toFixed(2) : '—';
-        const sizeText = t.action === 'hold'
+        const actionGroup = taActionGroup(displayAction);
+        const hasShares = Number(t.shares || 0) > 0;
+        const sizeText = actionGroup === 'hold'
             ? '无需交易'
-            : `${formatShares(t.shares)} 股 · ${formatUsd(t.amount, 0)}`;
+            : hasShares
+                ? `${formatShares(t.shares)} 股 · ${formatUsd(t.amount, 0)}`
+                : (actionGroup === 'buy' ? '建议加仓' : '建议减仓');
 
         return `<div class="ta-rec-item ${meta.card}">
             <div class="d-flex justify-content-between align-items-start gap-2">
@@ -1128,11 +1233,13 @@ function renderTaTradeTable(trades) {
     }
 
     tbody.innerHTML = rows.map(t => {
-        const meta = taActionMeta(t.action);
+        const displayAction = taDisplayAction(t);
+        const meta = taActionMeta(displayAction);
         const reason = t.reason || '';
         const hasLong = reason.length > 160;
-        const amountText = t.action === 'hold' ? '—' : formatUsd(t.amount, 0);
-        const sharesText = t.action === 'hold' ? '—' : formatShares(t.shares);
+        const actionGroup = taActionGroup(displayAction);
+        const amountText = actionGroup === 'hold' ? '—' : formatUsd(t.amount, 0);
+        const sharesText = actionGroup === 'hold' ? '—' : formatShares(t.shares);
         const priceText = t.price ? '$' + Number(t.price).toFixed(2) : '—';
 
         return `<tr class="${meta.row}">
