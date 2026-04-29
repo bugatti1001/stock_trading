@@ -560,6 +560,7 @@ def _get_ta_config() -> dict:
         config['llm_provider'] = 'openai'
         config['deep_think_llm'] = NVIDIA_DEFAULT_MODEL
         config['quick_think_llm'] = NVIDIA_DEFAULT_MODEL
+        config['analyst_llm'] = NVIDIA_DEFAULT_MODEL
         config['backend_url'] = NVIDIA_BASE_URL
         config['api_key'] = api_key
     else:
