@@ -131,6 +131,73 @@
     .quick-tag:hover { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
     .ai-trade-row { cursor: pointer; }
     .ai-trade-row:hover { background: #f0f4ff !important; }
+    .ta-summary-tile {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 0.75rem 0.9rem;
+        background: #fff;
+        min-height: 74px;
+    }
+    .ta-summary-tile .label {
+        color: #6b7280;
+        font-size: 0.78rem;
+        margin-bottom: 0.2rem;
+    }
+    .ta-summary-tile .value {
+        font-size: 1.35rem;
+        line-height: 1.1;
+        font-weight: 700;
+    }
+    .ta-recommendation-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 0.9rem;
+    }
+    .ta-rec-item {
+        border: 1px solid #e5e7eb;
+        border-left-width: 4px;
+        border-radius: 8px;
+        padding: 0.9rem;
+        background: #fff;
+    }
+    .ta-rec-buy { border-left-color: #198754; }
+    .ta-rec-sell { border-left-color: #dc3545; }
+    .ta-rec-hold { border-left-color: #6c757d; }
+    .ta-rec-symbol {
+        font-family: 'Courier New', monospace;
+        font-size: 1.15rem;
+        font-weight: 800;
+        letter-spacing: 0;
+    }
+    .ta-rec-reason {
+        color: #374151;
+        font-size: 0.88rem;
+        line-height: 1.45;
+        margin-top: 0.65rem;
+    }
+    .ta-rec-detail {
+        max-height: 220px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        font-size: 0.82rem;
+        color: #374151;
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 0.7rem;
+        margin-top: 0.5rem;
+    }
+    .ta-rec-item details summary {
+        cursor: pointer;
+        color: #0d6efd;
+        font-size: 0.82rem;
+        margin-top: 0.55rem;
+    }
+    .ta-filter .btn.active {
+        color: #fff;
+        background: #374151;
+        border-color: #374151;
+    }
 </style>
 {% endblock %}
 
@@ -309,29 +376,91 @@
 
 <!-- TradingAgents 交易历史 -->
 <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-people me-1"></i>TradingAgents 交易历史</span>
-        <button class="btn btn-outline-primary btn-sm" onclick="loadTaTradeHistory()">
-            <i class="bi bi-arrow-clockwise me-1"></i>刷新
-        </button>
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            <div><i class="bi bi-people me-1"></i>TradingAgents 推荐结果</div>
+            <small class="text-muted">优先显示最近一次分析中每只股票的建议</small>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <div class="btn-group btn-group-sm ta-filter" role="group" aria-label="TA recommendation filters">
+                <button type="button" class="btn btn-outline-secondary active" data-ta-filter="all" onclick="setTaTradeFilter('all')">全部</button>
+                <button type="button" class="btn btn-outline-success" data-ta-filter="buy" onclick="setTaTradeFilter('buy')">买入</button>
+                <button type="button" class="btn btn-outline-danger" data-ta-filter="sell" onclick="setTaTradeFilter('sell')">卖出</button>
+                <button type="button" class="btn btn-outline-secondary" data-ta-filter="hold" onclick="setTaTradeFilter('hold')">持有</button>
+            </div>
+            <button class="btn btn-outline-primary btn-sm" onclick="loadTaTradeHistory()">
+                <i class="bi bi-arrow-clockwise me-1"></i>刷新
+            </button>
+        </div>
     </div>
     <div class="card-body p-0">
         <div class="text-center text-muted py-3" id="taTradeEmpty">暂无 TA 交易记录</div>
-        <div class="table-responsive" id="taTradeTableWrap" style="display:none; max-height:400px; overflow-y:auto;">
-            <table class="table table-hover table-sm mb-0">
-                <thead class="table-light sticky-top">
-                    <tr>
-                        <th>日期</th>
-                        <th>代码</th>
-                        <th>操作</th>
-                        <th>数量</th>
-                        <th>价格</th>
-                        <th>金额</th>
-                        <th>决策原因</th>
-                    </tr>
-                </thead>
-                <tbody id="taTradeBody"></tbody>
-            </table>
+        <div id="taTradeContent" style="display:none;">
+            <div class="p-3 border-bottom bg-light">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                        <div class="fw-semibold">最新分析批次</div>
+                        <small class="text-muted" id="taRunMeta">—</small>
+                    </div>
+                    <small class="text-muted" id="taHistoryCount">—</small>
+                </div>
+                <div class="row g-2 mt-2">
+                    <div class="col-6 col-lg-3">
+                        <div class="ta-summary-tile">
+                            <div class="label">买入推荐</div>
+                            <div class="value text-success" id="taBuyCount">0</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-3">
+                        <div class="ta-summary-tile">
+                            <div class="label">卖出推荐</div>
+                            <div class="value text-danger" id="taSellCount">0</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-3">
+                        <div class="ta-summary-tile">
+                            <div class="label">持有/观望</div>
+                            <div class="value text-secondary" id="taHoldCount">0</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-3">
+                        <div class="ta-summary-tile">
+                            <div class="label">涉及股票</div>
+                            <div class="value" id="taSymbolCount">0</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="p-3">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                    <div class="fw-semibold">推荐股票</div>
+                    <small class="text-muted" id="taRecommendationHint">按筛选条件显示最新分析结果</small>
+                </div>
+                <div id="taRecommendationBoard" class="ta-recommendation-grid"></div>
+                <div id="taRecommendationEmpty" class="text-center text-muted py-4" style="display:none;">当前筛选下没有推荐股票</div>
+            </div>
+            <div class="border-top">
+                <div class="d-flex justify-content-between align-items-center px-3 py-2 bg-light">
+                    <span class="fw-semibold small">完整记录</span>
+                    <small class="text-muted">保留历史批次，便于回看</small>
+                </div>
+                <div class="table-responsive" id="taTradeTableWrap" style="max-height:420px; overflow-y:auto;">
+                    <table class="table table-hover table-sm mb-0">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th>日期</th>
+                                <th>代码</th>
+                                <th>TA建议</th>
+                                <th>数量</th>
+                                <th>价格</th>
+                                <th>金额</th>
+                                <th>决策摘要</th>
+                            </tr>
+                        </thead>
+                        <tbody id="taTradeBody"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -606,7 +735,76 @@ async function submitImportCSV() {
 
 // ── State ──────────────────────────────────────────────────────
 let allTrades = [];
+let taTrades = [];
+let taTradeFilter = 'all';
 let detailModal;
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[ch]));
+}
+
+function formatUsd(value, maximumFractionDigits = 0) {
+    const n = Number(value || 0);
+    return '$' + n.toLocaleString('en-US', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits,
+    });
+}
+
+function formatShares(value) {
+    const n = Number(value || 0);
+    if (!n) return '—';
+    return n.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
+function summarizeTaReason(reason) {
+    const lines = String(reason || '')
+        .replace(/\r/g, '')
+        .split('\n')
+        .map(line => line.trim().replace(/^#+\s*/, '').replace(/^\*+\s*/, ''))
+        .filter(line => line && !line.startsWith('==='));
+    const preferred = lines.find(line =>
+        /(最终|建议|决策|recommend|rating|buy|sell|hold|买入|卖出|持有|观望)/i.test(line)
+    ) || lines[0] || '无决策说明';
+    return preferred.length > 150 ? preferred.slice(0, 150) + '...' : preferred;
+}
+
+function taActionMeta(action) {
+    if (action === 'buy') {
+        return {
+            label: '买入推荐',
+            shortLabel: '买入',
+            icon: 'bi-arrow-up-circle',
+            badge: 'bg-success',
+            row: 'table-success',
+            card: 'ta-rec-buy',
+        };
+    }
+    if (action === 'sell') {
+        return {
+            label: '卖出推荐',
+            shortLabel: '卖出',
+            icon: 'bi-arrow-down-circle',
+            badge: 'bg-danger',
+            row: 'table-danger',
+            card: 'ta-rec-sell',
+        };
+    }
+    return {
+        label: '持有/观望',
+        shortLabel: '持有',
+        icon: 'bi-pause-circle',
+        badge: 'bg-secondary',
+        row: '',
+        card: 'ta-rec-hold',
+    };
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
@@ -820,43 +1018,141 @@ async function loadTaTradeHistory() {
         const data = await res.json();
         if (!data.success || !data.trades || data.trades.length === 0) {
             document.getElementById('taTradeEmpty').style.display = 'block';
-            document.getElementById('taTradeTableWrap').style.display = 'none';
+            document.getElementById('taTradeContent').style.display = 'none';
+            taTrades = [];
             return;
         }
         document.getElementById('taTradeEmpty').style.display = 'none';
-        document.getElementById('taTradeTableWrap').style.display = 'block';
-        const tbody = document.getElementById('taTradeBody');
-        tbody.innerHTML = data.trades.map(t => {
-            if (t.action === 'hold') {
-                return `<tr title="TA决定当日不操作">
-                    <td class="text-nowrap">${t.trade_date || ''}</td>
-                    <td colspan="5" class="text-center text-muted"><i class="bi bi-pause-circle me-1"></i>今日无操作</td>
-                    <td><small>${t.reason || ''}</small></td>
-                </tr>`;
-            }
-            const isBuy = t.action === 'buy';
-            const actionBadge = isBuy
-                ? '<span class="badge bg-success">买入</span>'
-                : '<span class="badge bg-danger">卖出</span>';
-            const reasonShort = (t.reason || '').length > 80 ? (t.reason || '').slice(0, 80) + '...' : (t.reason || '');
-            const hasLong = (t.reason || '').length > 80;
-            const reasonId = `ta-reason-${t.id || Math.random().toString(36).slice(2)}`;
-            return `<tr>
-                <td class="text-nowrap">${t.trade_date || ''}</td>
-                <td><strong>${t.symbol}</strong></td>
-                <td>${actionBadge}</td>
-                <td>${t.shares}</td>
-                <td>$${t.price?.toFixed(2) || '0'}</td>
-                <td>$${t.amount?.toLocaleString('en-US', {maximumFractionDigits: 0}) || '0'}</td>
-                <td style="max-width:400px">
-                    <small id="${reasonId}-short">${reasonShort}</small>
-                    ${hasLong ? `<a href="#" class="small text-primary ms-1" id="${reasonId}-expand" onclick="event.preventDefault();document.getElementById('${reasonId}-short').style.display='none';document.getElementById('${reasonId}-full').style.display='block';this.style.display='none';document.getElementById('${reasonId}-collapse').style.display=''">[展开]</a>
-                    <small id="${reasonId}-full" style="display:none;white-space:pre-wrap">${(t.reason || '').replace(/</g,'&lt;')}</small>
-                    <a href="#" class="small text-primary ms-1" id="${reasonId}-collapse" style="display:none" onclick="event.preventDefault();document.getElementById('${reasonId}-short').style.display='';document.getElementById('${reasonId}-full').style.display='none';this.style.display='none';document.getElementById('${reasonId}-expand').style.display=''">[收起]</a>` : ''}
-                </td>
-            </tr>`;
-        }).join('');
+        document.getElementById('taTradeContent').style.display = 'block';
+        taTrades = [...data.trades].sort((a, b) => {
+            const dateCmp = String(b.trade_date || '').localeCompare(String(a.trade_date || ''));
+            if (dateCmp !== 0) return dateCmp;
+            return (b.id || 0) - (a.id || 0);
+        });
+        renderTaTradeHistory();
     } catch (e) { console.error('loadTaTradeHistory error:', e); }
+}
+
+function setTaTradeFilter(filter) {
+    taTradeFilter = filter;
+    document.querySelectorAll('[data-ta-filter]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.taFilter === filter);
+    });
+    renderTaTradeHistory();
+}
+
+function matchesTaFilter(trade) {
+    return taTradeFilter === 'all' || trade.action === taTradeFilter;
+}
+
+function renderTaTradeHistory() {
+    if (!taTrades.length) return;
+
+    const latestDate = taTrades[0].trade_date || '';
+    const latestBatch = taTrades.filter(t => (t.trade_date || '') === latestDate);
+    const latestSymbols = new Set(latestBatch.map(t => t.symbol).filter(Boolean));
+    const counts = {
+        buy: latestBatch.filter(t => t.action === 'buy').length,
+        sell: latestBatch.filter(t => t.action === 'sell').length,
+        hold: latestBatch.filter(t => t.action === 'hold').length,
+    };
+
+    document.getElementById('taRunMeta').textContent = latestDate
+        ? `${latestDate} · ${latestBatch.length} 条建议`
+        : `${latestBatch.length} 条建议`;
+    document.getElementById('taHistoryCount').textContent = `历史记录 ${taTrades.length} 条`;
+    document.getElementById('taBuyCount').textContent = counts.buy;
+    document.getElementById('taSellCount').textContent = counts.sell;
+    document.getElementById('taHoldCount').textContent = counts.hold;
+    document.getElementById('taSymbolCount').textContent = latestSymbols.size;
+
+    renderTaRecommendationBoard(latestBatch);
+    renderTaTradeTable(taTrades);
+}
+
+function renderTaRecommendationBoard(latestBatch) {
+    const board = document.getElementById('taRecommendationBoard');
+    const empty = document.getElementById('taRecommendationEmpty');
+    const hint = document.getElementById('taRecommendationHint');
+    const visible = latestBatch.filter(matchesTaFilter);
+    const filterLabel = {
+        all: '全部建议',
+        buy: '买入推荐',
+        sell: '卖出推荐',
+        hold: '持有/观望',
+    }[taTradeFilter] || '全部建议';
+
+    hint.textContent = `${filterLabel} · 最新批次`;
+    if (!visible.length) {
+        board.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+
+    empty.style.display = 'none';
+    board.innerHTML = visible.map(t => {
+        const meta = taActionMeta(t.action);
+        const reason = t.reason || '';
+        const reasonSummary = summarizeTaReason(reason);
+        const priceText = t.price ? '$' + Number(t.price).toFixed(2) : '—';
+        const sizeText = t.action === 'hold'
+            ? '无需交易'
+            : `${formatShares(t.shares)} 股 · ${formatUsd(t.amount, 0)}`;
+
+        return `<div class="ta-rec-item ${meta.card}">
+            <div class="d-flex justify-content-between align-items-start gap-2">
+                <div>
+                    <div class="ta-rec-symbol">${escapeHtml(t.symbol || '—')}</div>
+                    <span class="badge ${meta.badge}"><i class="bi ${meta.icon} me-1"></i>${meta.label}</span>
+                </div>
+                <div class="text-end">
+                    <div class="fw-semibold">${sizeText}</div>
+                    <small class="text-muted">价格 ${priceText}</small>
+                </div>
+            </div>
+            <div class="ta-rec-reason">${escapeHtml(reasonSummary)}</div>
+            ${reason ? `<details>
+                <summary>查看完整决策原因</summary>
+                <div class="ta-rec-detail">${escapeHtml(reason)}</div>
+            </details>` : ''}
+        </div>`;
+    }).join('');
+}
+
+function renderTaTradeTable(trades) {
+    const tbody = document.getElementById('taTradeBody');
+    const rows = trades.filter(matchesTaFilter);
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">当前筛选下没有历史记录</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = rows.map(t => {
+        const meta = taActionMeta(t.action);
+        const reason = t.reason || '';
+        const hasLong = reason.length > 160;
+        const amountText = t.action === 'hold' ? '—' : formatUsd(t.amount, 0);
+        const sharesText = t.action === 'hold' ? '—' : formatShares(t.shares);
+        const priceText = t.price ? '$' + Number(t.price).toFixed(2) : '—';
+
+        return `<tr class="${meta.row}">
+            <td class="text-nowrap">${escapeHtml(t.trade_date || '')}</td>
+            <td><strong>${escapeHtml(t.symbol || '—')}</strong></td>
+            <td><span class="badge ${meta.badge}"><i class="bi ${meta.icon} me-1"></i>${meta.shortLabel}</span></td>
+            <td>${sharesText}</td>
+            <td>${priceText}</td>
+            <td>${amountText}</td>
+            <td style="max-width:460px">
+                <div class="small text-truncate" title="${escapeHtml(summarizeTaReason(reason))}">
+                    ${escapeHtml(summarizeTaReason(reason))}
+                </div>
+                ${hasLong ? `<details class="small">
+                    <summary class="text-primary">完整原因</summary>
+                    <div class="ta-rec-detail">${escapeHtml(reason)}</div>
+                </details>` : ''}
+            </td>
+        </tr>`;
+    }).join('');
 }
 
 // 页面加载时自动加载 TA 交易历史
