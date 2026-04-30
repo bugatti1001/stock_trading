@@ -549,6 +549,139 @@ def ta_trade_history():
         return error_response(str(e), 500)
 
 
+@bp.route('/api/agent/ta_recommendations', methods=['GET'])
+def ta_recommendations():
+    """获取最近一次 TradingAgents 原始分析结果。"""
+    try:
+        import json
+        import os
+        from app.config.database import db_session
+        from app.models.stock import Stock
+        from app.models.user_setting import UserSetting
+        from app.services.tradingagents_service import (
+            TA_LAST_RECOMMENDATIONS_SETTING_KEY,
+            get_ta_progress,
+        )
+        from tradingagents.agents.utils.rating import parse_rating
+
+        ta_results_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            'data',
+            'ta_cache',
+            'results',
+        )
+
+        def load_saved_decision(symbol: str, run_date: str) -> str:
+            if not symbol or not run_date:
+                return ''
+            path = os.path.join(
+                ta_results_dir,
+                symbol,
+                'TradingAgentsStrategy_logs',
+                f'full_states_log_{run_date}.json',
+            )
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                state = data.get(run_date) if isinstance(data, dict) else None
+                if isinstance(state, dict):
+                    return state.get('final_trade_decision') or ''
+            except Exception:
+                return ''
+            return ''
+
+        payload = {}
+        row = db_session.query(UserSetting).filter_by(
+            key=TA_LAST_RECOMMENDATIONS_SETTING_KEY,
+        ).first()
+        if row and row.value:
+            try:
+                loaded = json.loads(row.value)
+                payload = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                payload = {}
+
+        recommendations = payload.get('items') if isinstance(payload.get('items'), list) else []
+        run_date = payload.get('date')
+
+        # Backward-compatible fallback for the latest run completed before this
+        # endpoint existed. The progress cache has the raw per-symbol actions,
+        # and the saved state logs provide full Portfolio Manager reasoning.
+        if not recommendations:
+            progress = get_ta_progress()
+            results = progress.get('results') or {}
+            if isinstance(results, dict) and results:
+                symbols = list(results.keys())
+                prices = {
+                    s.symbol: (s.current_price or 0)
+                    for s in db_session.query(Stock).filter(Stock.symbol.in_(symbols)).all()
+                }
+                run_date = (
+                    (progress.get('updated_at') or progress.get('started_at') or '')[:10]
+                    or None
+                )
+                recommendations = []
+                for symbol, action in results.items():
+                    reason = load_saved_decision(symbol, run_date)
+                    rating = parse_rating(reason, default=str(action or 'hold').title())
+                    recommendations.append({
+                        'symbol': symbol,
+                        'action': action,
+                        'rating': rating,
+                        'raw_action': action,
+                        'shares': 0,
+                        'price': prices.get(symbol, 0),
+                        'amount': 0,
+                        'trade_date': run_date,
+                        'reason': reason,
+                    })
+                payload = {
+                    'date': run_date,
+                    'generated_at': progress.get('updated_at'),
+                    'items': recommendations,
+                }
+
+        enriched_recommendations = []
+        for item in recommendations:
+            if not isinstance(item, dict):
+                continue
+            enriched = dict(item)
+            item_date = enriched.get('trade_date') or run_date
+            reason = enriched.get('reason') or load_saved_decision(enriched.get('symbol'), item_date)
+            if reason:
+                enriched['reason'] = reason
+                enriched['rating'] = parse_rating(reason, default=str(enriched.get('rating') or 'Hold'))
+            else:
+                enriched['reason'] = (
+                    'TradingAgents did not produce a final Portfolio Manager rationale for this symbol. '
+                    'It is shown as Hold because the analysis ended without a detailed final decision.'
+                )
+            enriched_recommendations.append(enriched)
+        recommendations = enriched_recommendations
+
+        if recommendations and payload.get('items') != recommendations:
+            payload['items'] = recommendations
+            if not payload.get('date'):
+                payload['date'] = run_date
+            if row:
+                row.value = json.dumps(payload)
+            else:
+                db_session.add(UserSetting(
+                    key=TA_LAST_RECOMMENDATIONS_SETTING_KEY,
+                    value=json.dumps(payload),
+                ))
+            db_session.commit()
+
+        return success_response(
+            recommendations=recommendations,
+            date=payload.get('date'),
+            generated_at=payload.get('generated_at'),
+        )
+    except Exception as e:
+        logger.error(f"ta_recommendations 错误: {e}")
+        return error_response(str(e), 500)
+
+
 @bp.route('/api/agent/scorer_weights', methods=['GET'])
 def get_scorer_weights():
     """获取当前评分权重"""

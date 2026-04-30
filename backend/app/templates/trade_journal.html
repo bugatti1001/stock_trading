@@ -739,6 +739,7 @@ async function submitImportCSV() {
 // ── State ──────────────────────────────────────────────────────
 let allTrades = [];
 let taTrades = [];
+let taRecommendations = [];
 let taTradeFilter = 'all';
 let detailModal;
 
@@ -833,6 +834,7 @@ function inferTaRatingFromReason(reason) {
 }
 
 function taDisplayAction(trade) {
+    if (trade && trade.rating) return normalizeTaRatingLabel(trade.rating);
     const inferred = inferTaRatingFromReason(trade && trade.reason);
     return inferred || normalizeTaRatingLabel(trade && trade.action);
 }
@@ -1114,21 +1116,29 @@ loadAiTradeHistory();
 // ── TA Trade History ──────────────────────────────────────────
 async function loadTaTradeHistory() {
     try {
-        const res = await fetch('/api/agent/ta_trade_history');
-        const data = await res.json();
-        if (!data.success || !data.trades || data.trades.length === 0) {
+        const [historyRes, recommendationRes] = await Promise.all([
+            fetch('/api/agent/ta_trade_history').then(r => r.json()),
+            fetch('/api/agent/ta_recommendations').then(r => r.json()).catch(() => ({success: false})),
+        ]);
+
+        taTrades = historyRes.success && Array.isArray(historyRes.trades)
+            ? [...historyRes.trades].sort((a, b) => {
+                const dateCmp = String(b.trade_date || '').localeCompare(String(a.trade_date || ''));
+                if (dateCmp !== 0) return dateCmp;
+                return (b.id || 0) - (a.id || 0);
+            })
+            : [];
+        taRecommendations = recommendationRes.success && Array.isArray(recommendationRes.recommendations)
+            ? [...recommendationRes.recommendations]
+            : [];
+
+        if (!taTrades.length && !taRecommendations.length) {
             document.getElementById('taTradeEmpty').style.display = 'block';
             document.getElementById('taTradeContent').style.display = 'none';
-            taTrades = [];
             return;
         }
         document.getElementById('taTradeEmpty').style.display = 'none';
         document.getElementById('taTradeContent').style.display = 'block';
-        taTrades = [...data.trades].sort((a, b) => {
-            const dateCmp = String(b.trade_date || '').localeCompare(String(a.trade_date || ''));
-            if (dateCmp !== 0) return dateCmp;
-            return (b.id || 0) - (a.id || 0);
-        });
         renderTaTradeHistory();
     } catch (e) { console.error('loadTaTradeHistory error:', e); }
 }
@@ -1146,10 +1156,14 @@ function matchesTaFilter(trade) {
 }
 
 function renderTaTradeHistory() {
-    if (!taTrades.length) return;
+    if (!taTrades.length && !taRecommendations.length) return;
 
-    const latestDate = taTrades[0].trade_date || '';
-    const latestBatch = taTrades.filter(t => (t.trade_date || '') === latestDate);
+    const latestTradeDate = taTrades[0]?.trade_date || '';
+    const latestTradeBatch = latestTradeDate
+        ? taTrades.filter(t => (t.trade_date || '') === latestTradeDate)
+        : [];
+    const latestBatch = taRecommendations.length ? taRecommendations : latestTradeBatch;
+    const latestDate = latestBatch[0]?.trade_date || latestTradeDate || '';
     const latestSymbols = new Set(latestBatch.map(t => t.symbol).filter(Boolean));
     const counts = {
         buy: latestBatch.filter(t => taActionGroup(taDisplayAction(t)) === 'buy').length,
@@ -1158,9 +1172,9 @@ function renderTaTradeHistory() {
     };
 
     document.getElementById('taRunMeta').textContent = latestDate
-        ? `${latestDate} · ${latestBatch.length} 条建议`
-        : `${latestBatch.length} 条建议`;
-    document.getElementById('taHistoryCount').textContent = `历史记录 ${taTrades.length} 条`;
+        ? `${latestDate} · ${latestBatch.length} 条原始结果`
+        : `${latestBatch.length} 条原始结果`;
+    document.getElementById('taHistoryCount').textContent = `交易记录 ${taTrades.length} 条`;
     document.getElementById('taBuyCount').textContent = counts.buy;
     document.getElementById('taSellCount').textContent = counts.sell;
     document.getElementById('taHoldCount').textContent = counts.hold;

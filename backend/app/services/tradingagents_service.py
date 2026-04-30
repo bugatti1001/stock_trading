@@ -29,6 +29,7 @@ if TRADINGAGENTS_PATH not in sys.path:
     sys.path.insert(0, TRADINGAGENTS_PATH)
 TRADER_NAME = 'tradingagents'
 TA_LAST_RUN_SETTING_KEY = 'ta_last_run_date'
+TA_LAST_RECOMMENDATIONS_SETTING_KEY = 'ta_last_recommendations'
 MAX_POSITIONS = 5
 TA_CASH_RESERVE_PCT = 0.05
 TA_MAX_POSITION_WEIGHT = 0.25
@@ -1709,6 +1710,41 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
         logger.info("[TA] 今日无分析结果")
 
     try:
+        recommendation_items = []
+        for symbol in symbols:
+            outcome = valid_trades.get(symbol)
+            if not outcome:
+                continue
+            price = price_map.get(symbol, 0) or 0
+            shares = outcome.get('shares') or 0
+            recommendation_items.append({
+                'symbol': symbol,
+                'action': outcome.get('action') or 'hold',
+                'rating': outcome.get('rating') or decisions.get(symbol, {}).get('rating'),
+                'raw_action': decisions.get(symbol, {}).get('action'),
+                'shares': shares,
+                'price': price,
+                'amount': round(shares * price, 2) if shares and price else 0,
+                'trade_date': today.isoformat(),
+                'reason': outcome.get('reason', ''),
+            })
+
+        recommendations_payload = {
+            'date': today.isoformat(),
+            'generated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+            'items': recommendation_items,
+        }
+        recommendations_row = db_session.query(UserSetting).filter_by(
+            key=TA_LAST_RECOMMENDATIONS_SETTING_KEY,
+        ).first()
+        if recommendations_row:
+            recommendations_row.value = _json.dumps(recommendations_payload)
+        else:
+            db_session.add(UserSetting(
+                key=TA_LAST_RECOMMENDATIONS_SETTING_KEY,
+                value=_json.dumps(recommendations_payload),
+            ))
+
         if not selected_symbols:
             last_run = db_session.query(UserSetting).filter_by(key=TA_LAST_RUN_SETTING_KEY).first()
             if last_run:
