@@ -1218,6 +1218,7 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
     """
     from app.models.ai_trade_record import AiTradeRecord
     from app.models.stock import Stock
+    from app.models.ta_recommendation_record import TaRecommendationRecord
     from app.models.user_setting import UserSetting
 
     today = date_type.today()
@@ -1734,6 +1735,26 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
             'generated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
             'items': recommendation_items,
         }
+
+        for item in recommendation_items:
+            symbol = item.get('symbol')
+            if not symbol:
+                continue
+            record = db_session.query(TaRecommendationRecord).filter_by(
+                symbol=symbol,
+                trade_date=today,
+            ).first()
+            if not record:
+                record = TaRecommendationRecord(symbol=symbol, trade_date=today)
+                db_session.add(record)
+            record.rating = str(item.get('rating') or item.get('action') or 'Hold')
+            record.action = str(item.get('action') or 'hold').lower()
+            record.raw_action = item.get('raw_action')
+            record.shares = float(item.get('shares') or 0)
+            record.price = float(item.get('price') or 0)
+            record.amount = float(item.get('amount') or 0)
+            record.reason = item.get('reason') or ''
+
         recommendations_row = db_session.query(UserSetting).filter_by(
             key=TA_LAST_RECOMMENDATIONS_SETTING_KEY,
         ).first()

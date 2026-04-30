@@ -178,6 +178,25 @@
         line-height: 1.45;
         margin-top: 0.65rem;
     }
+    .ta-rec-trend {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        margin-top: 0.6rem;
+        font-size: 0.78rem;
+        color: #6b7280;
+    }
+    .ta-rec-trend-chip {
+        font-size: 0.72rem;
+        font-weight: 600;
+        border-radius: 999px;
+        padding: 0.22rem 0.45rem;
+    }
+    .ta-rec-trend-summary {
+        flex-basis: 100%;
+        color: #4b5563;
+    }
     .ta-rec-detail {
         max-height: 220px;
         overflow-y: auto;
@@ -908,6 +927,43 @@ function taActionMeta(action) {
     };
 }
 
+function renderTaTrend(history) {
+    const rows = Array.isArray(history) ? history.filter(Boolean) : [];
+    if (!rows.length) {
+        return '<div class="ta-rec-trend"><span>趋势：暂无历史记录</span></div>';
+    }
+
+    const latest = rows[rows.length - 1];
+    const latestAction = normalizeTaRatingLabel(latest.rating || latest.action);
+    let streak = 0;
+    for (let i = rows.length - 1; i >= 0; i--) {
+        const action = normalizeTaRatingLabel(rows[i].rating || rows[i].action);
+        if (action !== latestAction) break;
+        streak += 1;
+    }
+
+    const previous = rows.length > 1 ? rows[rows.length - 2] : null;
+    const previousAction = previous ? normalizeTaRatingLabel(previous.rating || previous.action) : '';
+    const latestMeta = taActionMeta(latestAction);
+    const summary = !previous
+        ? `首次记录为 ${latestMeta.shortLabel}`
+        : previousAction === latestAction
+            ? `连续 ${streak} 次 ${latestMeta.shortLabel}`
+            : `从 ${taActionMeta(previousAction).shortLabel} 变为 ${latestMeta.shortLabel}`;
+
+    const chips = rows.map(row => {
+        const action = normalizeTaRatingLabel(row.rating || row.action);
+        const meta = taActionMeta(action);
+        const dateLabel = String(row.trade_date || '').slice(5) || '—';
+        return `<span class="badge ${meta.badge} ta-rec-trend-chip" title="${escapeHtml(row.trade_date || '')}">${escapeHtml(dateLabel)} ${escapeHtml(meta.shortLabel)}</span>`;
+    }).join('');
+
+    return `<div class="ta-rec-trend">
+        <span>趋势：</span>${chips}
+        <span class="ta-rec-trend-summary">${escapeHtml(summary)}</span>
+    </div>`;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
     // Default date to today
@@ -1217,6 +1273,7 @@ function renderTaRecommendationBoard(latestBatch) {
             : hasShares
                 ? `${formatShares(t.shares)} 股 · ${formatUsd(t.amount, 0)}`
                 : (actionGroup === 'buy' ? '建议加仓' : '建议减仓');
+        const trendHtml = renderTaTrend(t.history);
 
         return `<div class="ta-rec-item ${meta.card}">
             <div class="d-flex justify-content-between align-items-start gap-2">
@@ -1230,6 +1287,7 @@ function renderTaRecommendationBoard(latestBatch) {
                 </div>
             </div>
             <div class="ta-rec-reason">${escapeHtml(reasonSummary)}</div>
+            ${trendHtml}
             ${reason ? `<details>
                 <summary>查看完整决策原因</summary>
                 <div class="ta-rec-detail">${escapeHtml(reason)}</div>

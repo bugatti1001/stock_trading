@@ -557,11 +557,14 @@ def ta_recommendations():
         import os
         from app.config.database import db_session
         from app.models.stock import Stock
+        from app.models.ta_recommendation_record import TaRecommendationRecord
         from app.models.user_setting import UserSetting
         from app.services.tradingagents_service import (
             TA_LAST_RECOMMENDATIONS_SETTING_KEY,
             get_ta_progress,
         )
+        from datetime import date as date_type, datetime
+        from sqlalchemy import desc, func
         from tradingagents.agents.utils.rating import parse_rating
 
         ta_results_dir = os.path.join(
@@ -590,6 +593,97 @@ def ta_recommendations():
                 return ''
             return ''
 
+        def item_date_value(value):
+            if isinstance(value, date_type):
+                return value
+            if isinstance(value, str) and value:
+                try:
+                    return date_type.fromisoformat(value[:10])
+                except ValueError:
+                    return None
+            return None
+
+        def record_to_item(record: TaRecommendationRecord) -> dict:
+            return {
+                'id': record.id,
+                'symbol': record.symbol,
+                'action': record.action,
+                'rating': record.rating,
+                'raw_action': record.raw_action,
+                'shares': record.shares,
+                'price': record.price,
+                'amount': record.amount,
+                'trade_date': record.trade_date.isoformat() if record.trade_date else None,
+                'reason': record.reason or '',
+            }
+
+        def persist_recommendations(items: list, default_date: str = None):
+            changed = False
+            for item in items:
+                if not isinstance(item, dict) or not item.get('symbol'):
+                    continue
+                trade_date = item_date_value(item.get('trade_date') or default_date)
+                if not trade_date:
+                    continue
+                symbol = str(item.get('symbol')).upper()
+                record = db_session.query(TaRecommendationRecord).filter_by(
+                    symbol=symbol,
+                    trade_date=trade_date,
+                ).first()
+                if not record:
+                    record = TaRecommendationRecord(symbol=symbol, trade_date=trade_date)
+                    db_session.add(record)
+                    changed = True
+
+                updates = {
+                    'rating': str(item.get('rating') or item.get('action') or 'Hold'),
+                    'action': str(item.get('action') or 'hold').lower(),
+                    'raw_action': item.get('raw_action'),
+                    'shares': float(item.get('shares') or 0),
+                    'price': float(item.get('price') or 0),
+                    'amount': float(item.get('amount') or 0),
+                    'reason': item.get('reason') or '',
+                }
+                for key, value in updates.items():
+                    if getattr(record, key) != value:
+                        setattr(record, key, value)
+                        changed = True
+            return changed
+
+        def attach_symbol_history(items: list, limit: int = 10) -> list:
+            symbols = sorted({str(item.get('symbol')).upper() for item in items if item.get('symbol')})
+            if not symbols:
+                return items
+
+            rows = (
+                db_session.query(TaRecommendationRecord)
+                .filter(TaRecommendationRecord.symbol.in_(symbols))
+                .order_by(
+                    TaRecommendationRecord.symbol,
+                    desc(TaRecommendationRecord.trade_date),
+                    desc(TaRecommendationRecord.id),
+                )
+                .all()
+            )
+            history = {}
+            for row in rows:
+                bucket = history.setdefault(row.symbol, [])
+                if len(bucket) >= limit:
+                    continue
+                bucket.append({
+                    'trade_date': row.trade_date.isoformat() if row.trade_date else None,
+                    'rating': row.rating,
+                    'action': row.action,
+                })
+
+            enriched = []
+            for item in items:
+                copy = dict(item)
+                sym = str(copy.get('symbol') or '').upper()
+                copy['history'] = list(reversed(history.get(sym, [])))
+                enriched.append(copy)
+            return enriched
+
         payload = {}
         row = db_session.query(UserSetting).filter_by(
             key=TA_LAST_RECOMMENDATIONS_SETTING_KEY,
@@ -601,7 +695,28 @@ def ta_recommendations():
             except Exception:
                 payload = {}
 
-        recommendations = payload.get('items') if isinstance(payload.get('items'), list) else []
+        recommendations = []
+        latest_date = db_session.query(func.max(TaRecommendationRecord.trade_date)).scalar()
+        if latest_date:
+            latest_records = (
+                db_session.query(TaRecommendationRecord)
+                .filter(TaRecommendationRecord.trade_date == latest_date)
+                .order_by(TaRecommendationRecord.symbol)
+                .all()
+            )
+            recommendations = [record_to_item(record) for record in latest_records]
+            latest_updated = max(
+                (record.updated_at for record in latest_records if record.updated_at),
+                default=None,
+            )
+            payload = {
+                'date': latest_date.isoformat(),
+                'generated_at': latest_updated.isoformat() if latest_updated else None,
+                'items': recommendations,
+            }
+
+        if not recommendations:
+            recommendations = payload.get('items') if isinstance(payload.get('items'), list) else []
         run_date = payload.get('date')
 
         # Backward-compatible fallback for the latest run completed before this
@@ -659,18 +774,28 @@ def ta_recommendations():
             enriched_recommendations.append(enriched)
         recommendations = enriched_recommendations
 
-        if recommendations and payload.get('items') != recommendations:
-            payload['items'] = recommendations
-            if not payload.get('date'):
-                payload['date'] = run_date
-            if row:
-                row.value = json.dumps(payload)
-            else:
-                db_session.add(UserSetting(
-                    key=TA_LAST_RECOMMENDATIONS_SETTING_KEY,
-                    value=json.dumps(payload),
-                ))
-            db_session.commit()
+        if recommendations:
+            table_changed = persist_recommendations(recommendations, run_date)
+
+            setting_changed = False
+            if payload.get('items') != recommendations:
+                payload['items'] = recommendations
+                if not payload.get('date'):
+                    payload['date'] = run_date
+                if row:
+                    row.value = json.dumps(payload)
+                else:
+                    row = UserSetting(
+                        key=TA_LAST_RECOMMENDATIONS_SETTING_KEY,
+                        value=json.dumps(payload),
+                    )
+                    db_session.add(row)
+                setting_changed = True
+
+            if table_changed or setting_changed:
+                db_session.commit()
+
+            recommendations = attach_symbol_history(recommendations)
 
         return success_response(
             recommendations=recommendations,

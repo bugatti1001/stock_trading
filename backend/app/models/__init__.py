@@ -7,6 +7,7 @@ from .user_principle import UserPrinciple
 from .stock_news_analysis import StockNewsAnalysis
 from .user_setting import UserSetting
 from .ai_trade_record import AiTradeRecord
+from .ta_recommendation_record import TaRecommendationRecord
 
 __all__ = [
     'Stock',
@@ -19,4 +20,5 @@ __all__ = [
     'StockNewsAnalysis',
     'UserSetting',
     'AiTradeRecord',
+    'TaRecommendationRecord',
 ]
