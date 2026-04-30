@@ -44,7 +44,7 @@ TA_RATING_STRENGTH = {
 
 # ── Concurrency & Rate-Limit Settings ─────────────────────────────────────
 # How many stocks to analyze in parallel.  Keep low to avoid API rate limits.
-MAX_WORKERS = 3
+MAX_WORKERS = 8
 # Minimum seconds between launching successive TA analyses (token cool-down)
 LAUNCH_INTERVAL_SEC = 5
 # If an LLM call fails with rate-limit / timeout, retry after this many seconds
