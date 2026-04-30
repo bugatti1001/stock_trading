@@ -334,6 +334,9 @@ def ai_trade_history():
         from sqlalchemy import desc
         records = db_session.query(AiTradeRecord).filter(
             AiTradeRecord.trader == 'scorer',
+            AiTradeRecord.action.in_(('buy', 'sell')),
+            AiTradeRecord.shares > 0,
+            AiTradeRecord.price > 0,
             ~AiTradeRecord.reason.like('%初始化%'),
             ~AiTradeRecord.reason.like('%重置%'),
         ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).limit(200).all()
@@ -364,6 +367,8 @@ def ta_trades():
     try:
         from app.config.database import db_session
         from app.models.ai_trade_record import AiTradeRecord
+        from app.models.user_setting import UserSetting
+        from app.services.tradingagents_service import TA_LAST_RUN_SETTING_KEY, generate_ta_trades
         from datetime import date as date_type
         today = date_type.today()
 
@@ -377,17 +382,26 @@ def ta_trades():
             today_records = db_session.query(AiTradeRecord).filter(
                 AiTradeRecord.trade_date == today,
                 AiTradeRecord.trader == 'tradingagents',
+                AiTradeRecord.action.in_(('buy', 'sell')),
+                AiTradeRecord.shares > 0,
+                AiTradeRecord.price > 0,
                 ~AiTradeRecord.reason.like('%初始化%'),
                 ~AiTradeRecord.reason.like('%重置%'),
             ).all()
             if today_records:
                 trades = {
                     r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
-                    for r in today_records if r.action in ('buy', 'sell')
+                    for r in today_records
                 }
-                hold_record = any(r.action == 'hold' for r in today_records)
-                msg = '今日TA已决定不交易' if hold_record and not trades else '今日TA交易已执行'
-                return success_response(trades=trades, already_executed=True, message=msg)
+                return success_response(trades=trades, already_executed=True, message='今日TA交易已执行')
+
+            last_run = db_session.query(UserSetting).filter_by(key=TA_LAST_RUN_SETTING_KEY).first()
+            if last_run and last_run.value == today.isoformat():
+                return success_response(
+                    trades={},
+                    already_executed=True,
+                    message='今日TA已分析完成，无实际交易',
+                )
 
         # 前置检查2：当日新闻分析是否过半完成（手动选择股票时跳过）
         if not selected_symbols:
@@ -404,7 +418,6 @@ def ta_trades():
                     400,
                 )
 
-        from app.services.tradingagents_service import generate_ta_trades
         trades = generate_ta_trades(selected_symbols=selected_symbols)
         return success_response(trades=trades)
     except Exception as e:
@@ -515,6 +528,9 @@ def ta_trade_history():
         from sqlalchemy import desc
         records = db_session.query(AiTradeRecord).filter(
             AiTradeRecord.trader == 'tradingagents',
+            AiTradeRecord.action.in_(('buy', 'sell')),
+            AiTradeRecord.shares > 0,
+            AiTradeRecord.price > 0,
             ~AiTradeRecord.reason.like('%初始化%'),
             ~AiTradeRecord.reason.like('%重置%'),
         ).order_by(desc(AiTradeRecord.trade_date), desc(AiTradeRecord.id)).limit(200).all()

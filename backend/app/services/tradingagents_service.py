@@ -28,6 +28,7 @@ TRADINGAGENTS_PATH = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if TRADINGAGENTS_PATH not in sys.path:
     sys.path.insert(0, TRADINGAGENTS_PATH)
 TRADER_NAME = 'tradingagents'
+TA_LAST_RUN_SETTING_KEY = 'ta_last_run_date'
 MAX_POSITIONS = 5
 TA_CASH_RESERVE_PCT = 0.05
 TA_MAX_POSITION_WEIGHT = 0.25
@@ -1206,7 +1207,7 @@ def _prepend_execution_note(decision: dict, note: str):
 def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
     """
     Run TradingAgents for all in-pool stocks, determine position sizing,
-    save records to AiTradeRecord with trader='tradingagents'.
+    save executed records to AiTradeRecord with trader='tradingagents'.
     Returns { "AAPL": {"action": "buy", "shares": 10, "reason": "..."}, ... }
 
     Optimizations (v2):
@@ -1227,6 +1228,9 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
             .filter(
                 AiTradeRecord.trader == TRADER_NAME,
                 AiTradeRecord.trade_date == today,
+                AiTradeRecord.action.in_(('buy', 'sell')),
+                AiTradeRecord.shares > 0,
+                AiTradeRecord.price > 0,
                 ~AiTradeRecord.reason.like('%初始化%'),
                 ~AiTradeRecord.reason.like('%重置%'),
             )
@@ -1236,8 +1240,13 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
             logger.info("[TA] 今日已执行过，返回已有记录")
             return {
                 r.symbol: {'action': r.action, 'shares': r.shares, 'reason': r.reason or ''}
-                for r in today_records if r.action in ('buy', 'sell')
+                for r in today_records
             }
+
+        last_run = db_session.query(UserSetting).filter_by(key=TA_LAST_RUN_SETTING_KEY).first()
+        if last_run and last_run.value == today.isoformat():
+            logger.info("[TA] 今日已分析过，无实际交易记录")
+            return {}
     else:
         # Delete old records for selected symbols so they can be re-analyzed
         for sym in selected_symbols:
@@ -1683,32 +1692,39 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
         }
         logger.info(f"[TA] BUY {symbol}: {max_shares} 股 @ ${price:.2f}")
 
-    # 7. Save HOLD records for stocks that were analyzed but not traded
+    # 7. Return HOLD analysis results for stocks that were analyzed but not traded.
+    # Do not persist these as AiTradeRecord rows: transaction history should only
+    # contain executed buy/sell rows with positive quantity and price.
     for symbol, dec in decisions.items():
         if symbol not in valid_trades and dec.get('reason'):
-            db_session.add(AiTradeRecord(
-                trader=TRADER_NAME,
-                symbol=symbol,
-                action='hold',
-                shares=0,
-                price=price_map.get(symbol, 0),
-                trade_date=today,
-                reason=dec.get('reason', ''),
-            ))
             valid_trades[symbol] = {
                 'action': 'hold',
                 'shares': 0,
                 'reason': dec.get('reason', ''),
                 'rating': dec.get('rating'),
             }
-            logger.info(f"[TA] HOLD {symbol}: 保留分析结果")
+            logger.info(f"[TA] HOLD {symbol}: 仅返回分析结果，不写入交易历史")
 
     if not valid_trades:
         logger.info("[TA] 今日无分析结果")
 
     try:
+        if not selected_symbols:
+            last_run = db_session.query(UserSetting).filter_by(key=TA_LAST_RUN_SETTING_KEY).first()
+            if last_run:
+                last_run.value = today.isoformat()
+            else:
+                db_session.add(UserSetting(key=TA_LAST_RUN_SETTING_KEY, value=today.isoformat()))
+
         db_session.commit()
-        logger.info(f"[TA] 保存 {len(valid_trades)} 条交易记录")
+        executed_trade_count = sum(
+            1 for trade in valid_trades.values()
+            if trade.get('action') in ('buy', 'sell') and (trade.get('shares') or 0) > 0
+        )
+        logger.info(
+            f"[TA] 保存 {executed_trade_count} 条实际交易记录，"
+            f"返回 {len(valid_trades)} 条分析结果"
+        )
     except Exception as e:
         db_session.rollback()
         logger.error(f"[TA] 保存交易记录失败: {e}")
