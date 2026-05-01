@@ -87,6 +87,7 @@ def _run_migrations_all_users():
     from migrations.add_ai_trade_id import run as migrate_ai_trade_id
     from migrations.add_ai_trader_column import run as migrate_ai_trader
     from migrations.add_ta_recommendation_records import run as migrate_ta_recommendations
+    from migrations.add_performance_indexes import run as migrate_performance_indexes
 
     migrations = [
         ('数据库迁移检查', migrate_financial_data_v3),
@@ -98,6 +99,7 @@ def _run_migrations_all_users():
         ('AI交易讨论字段迁移', migrate_ai_trade_id),
         ('AI交易trader字段迁移', migrate_ai_trader),
         ('TA推荐历史表迁移', migrate_ta_recommendations),
+        ('查询性能索引迁移', migrate_performance_indexes),
     ]
 
     for username, eng in get_all_engines().items():

@@ -33,6 +33,7 @@ def main():
     from migrations.add_data_source_column import run as migrate_data_source
     from migrations.fix_us_stock_currency import run as fix_us_currency
     from migrations.add_include_principles import run as migrate_include_principles
+    from migrations.add_performance_indexes import run as migrate_performance_indexes
 
     migrations = [
         migrate_financial_data_v3,
@@ -40,6 +41,7 @@ def main():
         migrate_data_source,
         fix_us_currency,
         migrate_include_principles,
+        migrate_performance_indexes,
     ]
 
     os.makedirs(_DATA_DIR, exist_ok=True)

@@ -455,17 +455,22 @@ def _build_ai_trade_system_prompt(trade) -> str:
 
     # 价格映射
     price_map = {}
+    missing_price_symbols = []
     for s in scored_stocks:
         h = s.get('holding')
         if h and h.get('current_price'):
             price_map[s['symbol']] = h['current_price']
         else:
-            try:
-                stock_obj = db_session.query(Stock).filter_by(symbol=s['symbol']).first()
-                if stock_obj and stock_obj.current_price:
-                    price_map[s['symbol']] = stock_obj.current_price
-            except Exception:
-                pass
+            missing_price_symbols.append(s['symbol'])
+    if missing_price_symbols:
+        try:
+            for stock_obj in db_session.query(Stock).filter(
+                Stock.symbol.in_(missing_price_symbols)
+            ).all():
+                if stock_obj.current_price:
+                    price_map[stock_obj.symbol] = stock_obj.current_price
+        except Exception:
+            pass
 
     ai_portfolio_value = sum(
         ai_holdings.get(sym, {}).get('shares', 0) * price_map.get(sym, 0)

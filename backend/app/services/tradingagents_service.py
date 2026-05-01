@@ -1736,17 +1736,26 @@ def generate_ta_trades(selected_symbols: Optional[List[str]] = None) -> dict:
             'items': recommendation_items,
         }
 
+        recommendation_symbols = sorted({
+            item.get('symbol') for item in recommendation_items if item.get('symbol')
+        })
+        existing_recommendations = {}
+        if recommendation_symbols:
+            rows = db_session.query(TaRecommendationRecord).filter(
+                TaRecommendationRecord.symbol.in_(recommendation_symbols),
+                TaRecommendationRecord.trade_date == today,
+            ).all()
+            existing_recommendations = {row.symbol: row for row in rows}
+
         for item in recommendation_items:
             symbol = item.get('symbol')
             if not symbol:
                 continue
-            record = db_session.query(TaRecommendationRecord).filter_by(
-                symbol=symbol,
-                trade_date=today,
-            ).first()
+            record = existing_recommendations.get(symbol)
             if not record:
                 record = TaRecommendationRecord(symbol=symbol, trade_date=today)
                 db_session.add(record)
+                existing_recommendations[symbol] = record
             record.rating = str(item.get('rating') or item.get('action') or 'Hold')
             record.action = str(item.get('action') or 'hold').lower()
             record.raw_action = item.get('raw_action')

@@ -22,6 +22,8 @@ class StockNewsAnalysis(BaseModel):
     # Indexes
     __table_args__ = (
         Index('ix_news_analysis_stock_id', 'stock_id'),
+        Index('ix_news_analysis_analyzed_at', 'analyzed_at'),
+        Index('ix_news_analysis_symbol_analyzed_at', 'symbol', 'analyzed_at'),
     )
 
     def to_dict(self) -> dict:

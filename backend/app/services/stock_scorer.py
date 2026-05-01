@@ -410,20 +410,49 @@ def _score_moat(fins: List[FinancialData], latest_fd: Optional[FinancialData]) -
     return {'score': _clamp(score), 'details': details}
 
 
-def _score_news_sentiment(symbol: str) -> Dict[str, Any]:
-    """新闻情绪评分：基于当天 StockNewsAnalysis"""
+def _today_news_bounds_utc():
     utc_today = datetime.now(timezone.utc).date()
     today_start = datetime.combine(utc_today, datetime.min.time(), tzinfo=timezone.utc)
     tomorrow_start = datetime.combine(
         utc_today + timedelta(days=1),
         datetime.min.time(), tzinfo=timezone.utc,
     )
+    return today_start, tomorrow_start
 
-    analysis = db_session.query(StockNewsAnalysis).filter(
-        StockNewsAnalysis.symbol == symbol,
+
+def _load_today_news_analysis(symbols: List[str]) -> Dict[str, StockNewsAnalysis]:
+    """Batch-load today's news analysis rows to avoid per-stock queries."""
+    if not symbols:
+        return {}
+
+    today_start, tomorrow_start = _today_news_bounds_utc()
+    rows = db_session.query(StockNewsAnalysis).filter(
+        StockNewsAnalysis.symbol.in_(symbols),
         StockNewsAnalysis.analyzed_at >= today_start,
         StockNewsAnalysis.analyzed_at < tomorrow_start,
-    ).first()
+    ).all()
+
+    analysis_map: Dict[str, StockNewsAnalysis] = {}
+    for row in rows:
+        analysis_map.setdefault(row.symbol, row)
+    return analysis_map
+
+
+_MISSING_NEWS_ANALYSIS = object()
+
+
+def _score_news_sentiment(
+    symbol: str,
+    analysis: Any = _MISSING_NEWS_ANALYSIS,
+) -> Dict[str, Any]:
+    """新闻情绪评分：基于当天 StockNewsAnalysis"""
+    if analysis is _MISSING_NEWS_ANALYSIS:
+        today_start, tomorrow_start = _today_news_bounds_utc()
+        analysis = db_session.query(StockNewsAnalysis).filter(
+            StockNewsAnalysis.symbol == symbol,
+            StockNewsAnalysis.analyzed_at >= today_start,
+            StockNewsAnalysis.analyzed_at < tomorrow_start,
+        ).first()
 
     if not analysis:
         return {'score': 50, 'details': {'说明': '无当日新闻分析'}}
@@ -538,6 +567,7 @@ def score_stock(
     fins: List[FinancialData],
     holding: Optional[Dict],
     weights: Dict[str, float],
+    news_analysis: Any = _MISSING_NEWS_ANALYSIS,
 ) -> Dict[str, Any]:
     """
     对单只股票进行 5 维度评分
@@ -557,7 +587,7 @@ def score_stock(
         'earnings_quality': _score_earnings_quality(fins),
         'financial_health': _score_financial_health(latest_fd),
         'moat': _score_moat(fins, latest_fd),
-        'news_sentiment': _score_news_sentiment(stock.symbol),
+        'news_sentiment': _score_news_sentiment(stock.symbol, news_analysis),
     }
 
     # 加权计算总分
@@ -611,13 +641,14 @@ def score_all_stocks(weights: Optional[Dict[str, float]] = None) -> List[Dict]:
     from app.services.portfolio_service import compute_holdings
     holdings = compute_holdings()
     holdings_map = {h['symbol']: h for h in holdings}
+    news_map = _load_today_news_analysis([s.symbol for s in stocks])
 
     # 逐只评分
     results = []
     for stock in stocks:
         fins = fins_map.get(stock.id, [])
         holding = holdings_map.get(stock.symbol)
-        scored = score_stock(stock, fins, holding, weights)
+        scored = score_stock(stock, fins, holding, weights, news_map.get(stock.symbol))
         results.append(scored)
 
     # 有持仓的排前面，同组内按总分排序
@@ -645,6 +676,7 @@ def score_and_valuate_all_stocks(
     from app.services.portfolio_service import compute_holdings
     holdings = compute_holdings()
     holdings_map = {h['symbol']: h for h in holdings}
+    news_map = _load_today_news_analysis([s.symbol for s in stocks])
 
     from app.services.valuation_service import valuate_stock, get_valuation_params
     valuation_params = get_valuation_params()
@@ -655,7 +687,7 @@ def score_and_valuate_all_stocks(
         holding = holdings_map.get(stock.symbol)
 
         # 质量评分
-        scored = score_stock(stock, fins, holding, weights)
+        scored = score_stock(stock, fins, holding, weights, news_map.get(stock.symbol))
 
         # 内在价值估值
         try:
@@ -938,19 +970,20 @@ def generate_ai_trades(scored_stocks: List[Dict]) -> Dict:
     # 计算 AI 持仓总价值和可用现金
     # 用股票的当前价格来算
     price_map = {}
+    missing_price_symbols = []
     for s in scored_stocks:
         h = s.get('holding')
         if h and h.get('current_price'):
             price_map[s['symbol']] = h['current_price']
         else:
-            # 从 stock 表获取
-            try:
-                from app.models.stock import Stock
-                stock = db_session.query(Stock).filter_by(symbol=s['symbol']).first()
-                if stock and stock.current_price:
-                    price_map[s['symbol']] = stock.current_price
-            except Exception:
-                pass
+            missing_price_symbols.append(s['symbol'])
+    if missing_price_symbols:
+        try:
+            for stock in db_session.query(Stock).filter(Stock.symbol.in_(missing_price_symbols)).all():
+                if stock.current_price:
+                    price_map[stock.symbol] = stock.current_price
+        except Exception:
+            pass
 
     ai_portfolio_value = sum(
         ai_holdings.get(sym, {}).get('shares', 0) * price_map.get(sym, 0)

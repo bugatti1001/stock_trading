@@ -16,4 +16,5 @@ class AiTradeRecord(BaseModel):
 
     __table_args__ = (
         Index('ix_ai_trades_symbol_date', 'symbol', 'trade_date'),
+        Index('ix_ai_trades_trader_date', 'trader', 'trade_date'),
     )

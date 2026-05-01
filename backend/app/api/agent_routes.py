@@ -247,9 +247,16 @@ def ai_holdings():
         holdings = compute_ai_holdings()
         ai_cash = compute_ai_cash()
         # 附加当前价格和市值
+        symbols = list(holdings.keys())
+        stocks_map = {}
+        if symbols:
+            stocks_map = {
+                s.symbol: s
+                for s in db_session.query(Stock).filter(Stock.symbol.in_(symbols)).all()
+            }
         result = {}
         for symbol, h in holdings.items():
-            stock = db_session.query(Stock).filter_by(symbol=symbol).first()
+            stock = stocks_map.get(symbol)
             price = stock.current_price if stock else 0
             result[symbol] = {
                 'shares': h['shares'],
@@ -444,9 +451,16 @@ def ta_holdings():
         from app.models.stock import Stock
         holdings = compute_ta_holdings()
         ta_cash = compute_ta_cash()
+        symbols = list(holdings.keys())
+        stocks_map = {}
+        if symbols:
+            stocks_map = {
+                s.symbol: s
+                for s in db_session.query(Stock).filter(Stock.symbol.in_(symbols)).all()
+            }
         result = {}
         for symbol, h in holdings.items():
-            stock = db_session.query(Stock).filter_by(symbol=symbol).first()
+            stock = stocks_map.get(symbol)
             price = stock.current_price if stock else 0
             result[symbol] = {
                 'shares': h['shares'],
@@ -619,6 +633,9 @@ def ta_recommendations():
 
         def persist_recommendations(items: list, default_date: str = None):
             changed = False
+            pending = []
+            symbols = set()
+            trade_dates = set()
             for item in items:
                 if not isinstance(item, dict) or not item.get('symbol'):
                     continue
@@ -626,13 +643,24 @@ def ta_recommendations():
                 if not trade_date:
                     continue
                 symbol = str(item.get('symbol')).upper()
-                record = db_session.query(TaRecommendationRecord).filter_by(
-                    symbol=symbol,
-                    trade_date=trade_date,
-                ).first()
+                pending.append((item, symbol, trade_date))
+                symbols.add(symbol)
+                trade_dates.add(trade_date)
+
+            existing = {}
+            if pending:
+                rows = db_session.query(TaRecommendationRecord).filter(
+                    TaRecommendationRecord.symbol.in_(list(symbols)),
+                    TaRecommendationRecord.trade_date.in_(list(trade_dates)),
+                ).all()
+                existing = {(row.symbol, row.trade_date): row for row in rows}
+
+            for item, symbol, trade_date in pending:
+                record = existing.get((symbol, trade_date))
                 if not record:
                     record = TaRecommendationRecord(symbol=symbol, trade_date=trade_date)
                     db_session.add(record)
+                    existing[(symbol, trade_date)] = record
                     changed = True
 
                 updates = {
